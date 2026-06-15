@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: trivia-game
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+    disk:
+      name: trivia-data
+      mountPath: /app/data
+      sizeGB: 1
