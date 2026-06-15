@@ -439,7 +439,7 @@ yemotRouter.get('/yemot', async (call) => {
       const player = players[callId];
       if (!player) break;
       const digit = await call.read(
-        [{ type: 'file', data: '000' }], 'tap',
+        [{ type: 'text', data: 'ברוך הבא למשחק' }], 'tap',
         { max_digits: 1, digits_allowed: [1,2,3,4], sec_wait: 25, allow_empty: true }
       );
       if (gameState === 'playing' && digit && ['1','2','3','4'].includes(String(digit))) {
@@ -1823,12 +1823,8 @@ app.get('/start-family', (req, res) => {
 const SONG_ROUNDS = [
   // ישראלי
   { clue: '🎵 לא יסוף... לא יסוף...', answer: 'לא יסוף', opts: ['לא יסוף', 'לנסוע', 'ערש ינוק', 'שיר לשלום'], correct: 0, category: 'ישראלי' },
-  { clue: '🎵 שיר לשלום... לא תחזיר...', answer: 'שיר לשלום', opts: ['שיר לשלום', 'הלוויתן', 'לא תיסוף', 'שאו ציון'], correct: 0, category: 'ישראלי' },
-  { clue: '🎵 אני, ואתה, נשנה את העולם...', answer: 'אני ואתה', opts: ['אני ואתה', 'עיני לפניו', 'שיר האהבה', 'הלוויתן'], correct: 0, category: 'ישראלי' },
-  { clue: '🎵 ירושלים של זהב... ושל אור...', answer: 'ירושלים של זהב', opts: ['ירושלים שלי', 'ירושלים של זהב', 'עיר הקודש', 'שיר ירושלים'], correct: 1, category: 'ישראלי' },
-  { clue: '🎵 בשנה הבאה נשב על המרפסת...', answer: 'בשנה הבאה', opts: ['השנה הזו', 'בשנה הבאה', 'שנה טובה', 'תפילה'], correct: 1, category: 'ישראלי' },
-  { clue: '🎵 עוד לא אהבתי דיי... עוד לא שרתי דיי...', answer: 'עוד לא', opts: ['עוד לא', 'שיר האהבה', 'אהבה גדולה', 'כבר נסיתי'], correct: 0, category: 'ישראלי' },
-  { clue: '🎵 שרו לה שיר... שרו לה שיר ים תיכוני...', answer: 'שיר ים תיכוני', opts: ['ים תיכון', 'שיר ים תיכוני', 'שיר לים', 'הים הגדול'], correct: 1, category: 'ישראלי' },
+  { clue: '🎵 שיר לשלום... לא תחזיר...', answer: 'שיר לשלום', opts: ['שיר לשלום', 'הלוויתן', 'לא תיסוף', 'שאו ציון'], correct: 0, xxxxxxxx: 'xxxxxx' },	  { xxxx: 'x xxx, xxxx, xxxx xx xxxxx...', xxxxxx: 'xxx xxxx', xxxx: ['xxx xxxx', 'xxxx xxxxx', 'xxx xxxxx', 'xxxxxxx'], xxxxxxx: x, xxxxxxxx: 'xxxxxx' },	  { xxxx: 'x xxxxxxx xx xxx... xxx xxx...', xxxxxx: 'xxxxxxx xx xxx', xxxx: ['ירושלים שלי', 'ירושלים של זהב', 'עיר הקודש', 'שיר ירושלים'], correct: 1, category: 'ישראלי' },
+  { clue: '🎵 בשנה הבאה נשב על המרפסת...', answer: 'בשנה הבאה', opts: ['השנה הזו', 'בשנה הבאה', 'שנה טובה', 'תפילה'], correct: 1, xxxxxxxx: 'xxxxxx' },	  { xxxx: 'x xxx xx xxxxx xxx... xxx xx xxxx xxx...', xxxxxx: 'xxx xx', xxxx: ['xxx xx', 'xxx xxxxx', 'xxxx xxxxx', 'xxx xxxxx'], xxxxxxx: x, xxxxxxxx: 'xxxxxx' },	  { xxxx: 'x xxx xx xxx... xxx xx xxx xx xxxxxx...', answer: 'שיר ים תיכוני', opts: ['ים תיכון', 'שיר ים תיכוני', 'שיר לים', 'הים הגדול'], correct: 1, category: 'ישראלי' },
   { clue: '🎵 לכי לכי... יש אהבה בעיניים...', answer: 'לכי לכי', opts: ['לכי', 'לכי לכי', 'אהבה', 'עיניים'], correct: 1, category: 'ישראלי' },
   { clue: '🎵 מה אברך... את השנה הזאת...', answer: 'מה אברך', opts: ['ברכה', 'מה אברך', 'שנה חדשה', 'תפילה לשנה'], correct: 1, category: 'ישראלי' },
   { clue: '🎵 פרח גן עדן... פרח גן עדן...', answer: 'פרח גן עדן', opts: ['פרח בודד', 'פרח גן עדן', 'גן עדן', 'שיר הפרחים'], correct: 1, category: 'ישראלי' },
