@@ -442,8 +442,8 @@ await call.read(
     while (true) {
       const player = players[callId];
       if (!player) break;
-      const digit = await call.read(
-        [], 'tap',
+            const digit = await call.read(
+        [{ type: 'text', data: ' ' }], 'tap',
         { max_digits: 1, digits_allowed: [1,2,3,4], sec_wait: 60, allow_empty: true }
       );
       if (gameState === 'playing' && digit && ['1','2','3','4'].includes(String(digit))) {
