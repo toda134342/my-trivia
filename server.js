@@ -434,13 +434,17 @@ yemotRouter.get('/yemot', async (call) => {
     if (!inRoomContacts && !playerNames[phone]) { playerNames[phone] = name; saveNames(); }
     log('✅', `נכנס: ${name}`);
   }
+await call.read(
+    [{ type: 'text', data: 'ברוך הבא למשחק הטריוויה ראש בראש' }], 'tap',
+    { max_digits: 1, digits_allowed: [1,2,3,4], sec_wait: 5, allow_empty: true }
+  );
   try {
     while (true) {
       const player = players[callId];
       if (!player) break;
       const digit = await call.read(
-        [{ type: 'text', data: 'ברוך הבא למשחק' }], 'tap',
-        { max_digits: 1, digits_allowed: [1,2,3,4], sec_wait: 25, allow_empty: true }
+        [], 'tap',
+        { max_digits: 1, digits_allowed: [1,2,3,4], sec_wait: 60, allow_empty: true }
       );
       if (gameState === 'playing' && digit && ['1','2','3','4'].includes(String(digit))) {
         const chosen = parseInt(digit) - 1;
@@ -466,19 +470,11 @@ yemotRouter.get('/yemot', async (call) => {
         else if (gameMode === 'pyramid')   handlePyramidAnswer(player, chosen);
         else if (gameMode === 'passnote')  handlePassNoteAnswer(player, chosen);
         else handleAnswer(player, chosen);
-        // doubledown phase-1 (choosing safe/double): don't swallow next digit
-        if (!(gameMode === 'doubledown' && player._ddMode !== null && !player.answered)) {
-          await call.read(
-            [{ type: 'file', data: `00${digit}` }], 'tap',
-            { max_digits: 1, digits_allowed: [1,2,3,4], sec_wait: 25, allow_empty: true }
-          );
-        }
       }
     }
   } catch (e) {
     log('📵', `ניתוק: ${players[callId]?.name || phone} — ${e.message}`);
   } finally {
-    // תמיד נקה את השחקן כשהשיחה נגמרת — בין אם ניתוק, שגיאה, או יציאה רגילה
     if (players[callId]) {
       const name = players[callId].name;
       broadcast({ type: 'playerLeave', callId });
