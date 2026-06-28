@@ -1323,7 +1323,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
   <div class="lobby-c">
     <div class="lobby-logo">ראש בראש</div>
     <div class="lobby-mode-badge" id="lobby-badge">—</div>
-    <div class="lobby-call">📞 0747955610 ← לחייג </div>
+    <div class="lobby-call">📞 0747955610 ← לחייג  </div>
     <div class="lobby-cnt">מחוברים: <span id="lobby-cnt">0</span> שחקנים</div>
     <div class="lobby-btns">
       <button class="btn btn-ghost btn-sm" onclick="goAdmin()">⚙️ ניהול</button>
@@ -1905,7 +1905,7 @@ function getCountdownLength() {
   try { return parseInt(localStorage.getItem('trivia_cd_length') || '5') || 5; } catch { return 5; }
 }
 function setCountdownLength(n) {
-  try { localStorage.setItem('trivia_cd_length', String(n)); } catch {}
+  try { saveSettingToServer('trivia_cd_length', String(n)); } catch {}
 }
 
 function showCountdown(mode, onDone, introText) {
@@ -1994,7 +1994,7 @@ function showCountdown(mode, onDone, introText) {
     const u = new SpeechSynthesisUtterance(word);
     u.lang = 'he-IL';
     // ספירה לאחור — מהיר וגבוה בברירת מחדל, אבל פרופיל vp: גובר
-    if (isVpVoice(selectedVoiceName)) {
+    if (false) { // vp voices removed
       applyVoice(u); // פרופיל מוחל במלואו
     } else {
       u.rate = 1.15; u.pitch = 1.2;
@@ -4481,7 +4481,7 @@ function loadSavedCats() {
 }
 
 function saveCats(selected) {
-  try { localStorage.setItem('mixedCats', JSON.stringify(selected)); } catch(e) {}
+  try { saveSettingToServer('mixedCats', selected); } catch(e) {}
 }
 
 function initCatChips() {
@@ -4675,7 +4675,7 @@ function addQuestion(){
 
 // ========== PRESETS ==========
 function loadPresets(){return JSON.parse(localStorage.getItem('trivia_presets')||'{}');}
-function savePresets(p){localStorage.setItem('trivia_presets',JSON.stringify(p));}
+function savePresets(p){saveSettingToServer('trivia_presets',p);}
 function renderPresets(){
   const pr=loadPresets(),el=document.getElementById('presets-list');
   if(!el) return; // element may not exist on all screens
@@ -4901,7 +4901,7 @@ function setTheme(name) {
   const cls = [...document.body.classList].filter(c => c.startsWith('theme-'));
   cls.forEach(c => document.body.classList.remove(c));
   if (name) document.body.classList.add('theme-'+name);
-  localStorage.setItem('trivia_theme', name);
+  saveSettingToServer('trivia_theme', name);
   document.querySelectorAll('.thbtn').forEach(b => b.classList.remove('active'));
   const match = name
     ? document.querySelector(`.thbtn[onclick*="'${name}'"]`)
@@ -4931,7 +4931,7 @@ function setFontSize(size) {
     btn.style.borderColor = active ? 'var(--gold)' : '';
     btn.style.fontWeight = active ? '900' : '';
   });
-  localStorage.setItem('trivia_fs', size);
+  saveSettingToServer('trivia_fs', size);
 }
 
 // ========== TTS ==========
@@ -5063,91 +5063,40 @@ function loadVoicesList() {
     setTimeout(loadVoicesList, 500);
     return;
   }
-
-  // בדוק אם יש קול שמור ב-localStorage
+  // קול שמור — רק edge: תקף (vp: ודפדפן ספציפי כבר לא בשימוש)
   const saved = localStorage.getItem('trivia_voice') || '';
-  if (saved) {
-    // קול Edge — תמיד תקף
-    if (saved.startsWith('edge:')) {
-      selectedVoiceName = saved;
-      window._selectedVoice = null;
-      if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
-      return;
-    }
-    // פרופיל וירטואלי
-    if (saved.startsWith('vp:')) {
-      const prof = getVoiceProfile(saved);
-      if (prof) {
-        selectedVoiceName = saved;
-        window._selectedVoice = null;
-        if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
-        return;
-      }
-    }
-    // קול פיזי מהדפדפן
-    const v = availableVoices.find(vv => vv.name === saved);
-    if (v) {
-      selectedVoiceName = saved;
-      window._selectedVoice = v;
-      if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
-      return;
-    }
+  if (saved && saved.startsWith('edge:')) {
+    selectedVoiceName = saved;
+    window._selectedVoice = null;
+    if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
+    return;
   }
-
-  // ברירת מחדל: Edge אברי
+  // ברירת מחדל: אברי מהשרת
   selectedVoiceName = 'edge:avri';
   window._selectedVoice = null;
-  localStorage.setItem('trivia_voice', 'edge:avri');
+  saveSettingToServer('trivia_voice', 'edge:avri');
   if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
 }
 
 function setVoice(name) {
   selectedVoiceName = name || null;
-  localStorage.setItem('trivia_voice', name || '');
-  // Edge — עצור synth
+  saveSettingToServer('trivia_voice', name || '');
+  if (synth) synth.cancel();
   if (isEdgeVoice(name)) {
-    if (synth) synth.cancel();
     _ttsUnlocked = true;
     return;
   }
-  // פרופיל דמות — שמור בלבד, בלי "שלום!" מיותר
-  if (isVpVoice(name)) return;
-  // קול דפדפן רגיל — נגן "שלום!" כאישור
-  const u = new SpeechSynthesisUtterance('שלום!');
-  applyVoice(u);
-  if (synth) { synth.cancel(); synth.speak(u); }
+  // ברירת מחדל דפדפן — ללא "שלום!" מיותר
 }
 
 function applyVoice(u) {
-  const _vRate = typeof vpRate !== 'undefined' ? vpRate : 0.88;
-  const _vPitch = typeof vpPitch !== 'undefined' ? vpPitch : 1;
-  u.lang = 'he-IL'; u.rate = _vRate; u.pitch = _vPitch;
-
-  // פרופיל קול וירטואלי — שנה pitch/rate לפי הפרופיל
-  if (selectedVoiceName && selectedVoiceName.startsWith('vp:')) {
-    const prof = getVoiceProfile(selectedVoiceName);
-    if (prof) {
-      u.pitch = prof.pitch;
-      u.rate  = prof.rate;
-      u.lang  = 'he-IL';
-      const chosen = getPhysicalVoiceForProfile(prof);
-      if (chosen) { u.voice = chosen; window._selectedVoice = chosen; }
-    }
-    return;
-  }
-
-  // קול מובנה ספציפי לפי שם
-  const voices = synth ? synth.getVoices() : [];
-  const heVoices = voices.filter(v => v.lang && (v.lang.startsWith('he') || v.lang.startsWith('iw')));
-  if (selectedVoiceName) {
-    const v = voices.find(vv => vv.name === selectedVoiceName);
-    if (v) { u.voice = v; u.lang = v.lang; window._selectedVoice = v; return; }
-  }
-  // ברירת מחדל: קול גבר עברי, ואם אין — כל קול עברי
-  const maleVoice = heVoices.find(isMaleVoice);
-  const anyHe = heVoices[0];
-  const chosen = maleVoice || anyHe;
-  if (chosen) { u.voice = chosen; u.lang = chosen.lang; window._selectedVoice = chosen; }
+  u.lang = 'he-IL';
+  u.rate  = typeof vpRate  !== 'undefined' ? vpRate  : 0.9;
+  u.pitch = typeof vpPitch !== 'undefined' ? vpPitch : 1.0;
+  // בחר קול עברי מהדפדפן אם יש
+  const voices  = synth ? synth.getVoices() : [];
+  const heVoice = voices.find(v => v.lang && (v.lang.startsWith('he') || v.lang.startsWith('iw')));
+  if (heVoice) { u.voice = heVoice; u.lang = heVoice.lang; }
 }
 
 // ========== EDGE TTS — קול מהשרת ==========
@@ -5269,28 +5218,25 @@ function speakWebSpeech(text, rate, pitch) {
 }
 
 function speak(text, rate, pitch) {
-  if (!ttsOn) return;
-  if (window._ttsBlocked) return;
+  if (!ttsOn || window._ttsBlocked) return;
   if (typeof stripEmoji === 'function') text = stripEmoji(text);
   if (!text) return;
-  // קול Edge — שלח לשרת
+  // קול Edge — מהשרת (אברי / הילה)
   if (isEdgeVoice(selectedVoiceName)) {
     const edgeSpeed = rate !== undefined ? Math.min(2.0, Math.max(0.5, rate * EDGE_SPEED)) : EDGE_SPEED;
     speakEdge(text, selectedVoiceName, edgeSpeed);
     return;
   }
-  // Web Speech API — דפדפן / דמות פנימית
+  // fallback: קול הדפדפן המקומי
   if (!synth) return;
   synth.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'he-IL';
-  applyVoice(u);
-  // אל תדרוס pitch/rate של פרופיל דמות
-  if (!isVpVoice(selectedVoiceName)) {
-    if (rate  !== undefined) u.rate  = rate;
-    if (pitch !== undefined) u.pitch = pitch;
-  }
-  // delay קצר כדי לאפשר ל-cancel להשלים
+  u.rate  = rate  !== undefined ? rate  : 0.9;
+  u.pitch = pitch !== undefined ? pitch : 1.0;
+  // קול עברי אם יש
+  const heVoice = synth.getVoices().find(v => v.lang && (v.lang.startsWith('he') || v.lang.startsWith('iw')));
+  if (heVoice) u.voice = heVoice;
   setTimeout(() => { if (!window._ttsBlocked) synth.speak(u); }, 50);
 }
 
@@ -5300,7 +5246,7 @@ function toggleTTS() {
   if (btn) { btn.textContent = ttsOn ? 'פעיל 🔈' : 'כבוי'; btn.style.color = ttsOn ? 'var(--green)' : ''; btn.style.borderColor = ttsOn ? 'var(--green)' : ''; }
   // סנכרון כפתור TTS ב-room builder
   if (typeof rbSyncTTS === 'function') rbSyncTTS();
-  localStorage.setItem('trivia_tts', ttsOn ? '1' : '0');
+  saveSettingToServer('trivia_tts', ttsOn ? '1' : '0');
   if (!ttsOn && synth) synth.cancel();
   else if (ttsOn) {
     // הפעל ברכת פתיחה
@@ -5349,7 +5295,7 @@ function speakWelcome() {
   uSilent.onend = () => {
     const u = new SpeechSynthesisUtterance(text);
     applyVoice(u);
-    if (!isVpVoice(selectedVoiceName)) { u.rate = 0.9; u.pitch = 1.05; }
+    u.rate = 0.9; u.pitch = 1.05;
     synth.speak(u);
   };
   synth.cancel();
@@ -5442,7 +5388,7 @@ function loadCategories() {
 }
 
 function saveCategories(cats) {
-  localStorage.setItem('trivia_custom_cats', JSON.stringify(cats));
+  saveSettingToServer('trivia_custom_cats', cats);
 }
 
 function renderCategoryFilters() {
@@ -5664,7 +5610,7 @@ function flushTTSQueue() {
   const u = new SpeechSynthesisUtterance(text);
   applyVoice(u);
   // אל תדרוס pitch/rate אם יש פרופיל פנימי — הוא כבר הוחל ב-applyVoice
-  if (!isVpVoice(selectedVoiceName)) { u.rate = rate; u.pitch = pitch; }
+  u.rate = rate; u.pitch = pitch;
   u.onend  = () => { _ttsBusy = false; setTimeout(flushTTSQueue, 60); };
   u.onerror = () => { _ttsBusy = false; setTimeout(flushTTSQueue, 60); };
   synth.speak(u);
@@ -5878,7 +5824,7 @@ function _showNarratorEmptyState(empty) {
 function saveNarratorToStorage(silent) {
   if (!gwRoomId || gwIsAdmin) {
     try {
-      localStorage.setItem('trivia_narrator_v2', JSON.stringify(narratorPhrases));
+      saveSettingToServer('trivia_narrator_v2', narratorPhrases);
       const badge = document.getElementById('narrator-saved-badge');
       if (badge) { badge.style.opacity='1'; setTimeout(()=>{ badge.style.opacity='0'; }, 1800); }
       if (!silent) showToast('💾 משפטי הקריין נשמרו!');
@@ -5961,7 +5907,7 @@ let applauseSettings = JSON.parse(localStorage.getItem('applauseSettings') || 'n
 };
 
 function saveApplauseSettings() {
-  localStorage.setItem('applauseSettings', JSON.stringify(applauseSettings));
+  saveSettingToServer('applauseSettings', applauseSettings);
 }
 
 function renderApplauseTab() {
@@ -6253,8 +6199,8 @@ function listenNarratorPhrase(i) {
   const spokenText = stripEmoji(rawText);
   if (!spokenText) return;
   if (isEdgeVoice(selectedVoiceName)) { speakEdge(spokenText, selectedVoiceName); return; }
-  const rate  = isVpVoice(selectedVoiceName) ? undefined : 0.95;
-  const pitch = isVpVoice(selectedVoiceName) ? undefined : 1.05;
+  const rate  = 0.95;
+  const pitch = 1.05;
   speakWebSpeech(spokenText, rate, pitch);
 }
 
@@ -6268,8 +6214,8 @@ function testNarratorPhrase() {
   const spokenText = stripEmoji(rawText);
   if (!spokenText) return;
   if (isEdgeVoice(selectedVoiceName)) { speakEdge(spokenText, selectedVoiceName); return; }
-  const rate  = isVpVoice(selectedVoiceName) ? undefined : 0.95;
-  const pitch = isVpVoice(selectedVoiceName) ? undefined : 1.05;
+  const rate  = 0.95;
+  const pitch = 1.05;
   speakWebSpeech(spokenText, rate, pitch);
 }
 
@@ -6384,21 +6330,92 @@ function jumpMemory() {
   });
 }
 
-// ========== INIT ==========
-// Restore theme
-const savedTheme = localStorage.getItem('trivia_theme') || '';
-setTheme(savedTheme);
-// Restore font size
-const savedFs = localStorage.getItem('trivia_fs') || 'md';
-setFontSize(savedFs);
-// Restore TTS — but do NOT speak welcome on restore (wait for game)
-if (localStorage.getItem('trivia_tts') === '1') {
-  ttsOn = true;
-  const btn = document.getElementById('btn-tts');
-  if (btn) { btn.textContent = 'פעיל 🔈'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; }
+// ========== SERVER SETTINGS SYNC ==========
+// כל ההגדרות נשמרות בשרת ולא רק בדפדפן המקומי.
+// כך שינוי קול/ערכת נושא/שמות יישמר גם במחשב אחר.
+
+const SETTINGS_KEYS = ['trivia_theme','trivia_fs','trivia_voice','trivia_voice_rate','trivia_voice_pitch',
+  'trivia_voice_tab','trivia_tts','trivia_narrator_v2','applauseSettings','mixedCats',
+  'trivia_custom_cats','trivia_cd_length','trivia_presets'];
+
+// שמור הגדרה אחת לשרת (ולשמור גם ב-localStorage כגיבוי מקומי)
+function saveSettingToServer(key, value) {
+  try { localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value)); } catch {}
+  const body = {};
+  body[key] = typeof value === 'string' ? value : JSON.stringify(value);
+  fetch('/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).catch(() => {});
 }
 
-loadNarratorPhrases(); renderPresets(); initCatChips();
+// טוען הגדרות מהשרת ומחיל אותן — קורה פעם אחת בטעינת הדף
+async function loadSettingsFromServer() {
+  try {
+    const res = await fetch('/settings');
+    if (!res.ok) throw new Error('server error');
+    const serverSettings = await res.json();
+
+    // מזג: שרת גובר על localStorage
+    const merged = {};
+    SETTINGS_KEYS.forEach(k => {
+      const local = localStorage.getItem(k);
+      const srv   = serverSettings[k];
+      merged[k] = srv !== undefined ? srv : (local || null);
+    });
+
+    // החל הגדרות
+    const theme = merged['trivia_theme'] || '';
+    if (theme) setTheme(theme);
+    const fs = merged['trivia_fs'] || 'md';
+    setFontSize(fs);
+
+    if (merged['trivia_tts'] === '1') {
+      ttsOn = true;
+      const btn = document.getElementById('btn-tts');
+      if (btn) { btn.textContent = 'פעיל 🔈'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; }
+      if (typeof rbSyncTTS === 'function') rbSyncTTS();
+    }
+
+    if (merged['trivia_voice'])       { try { localStorage.setItem('trivia_voice', merged['trivia_voice']); } catch {} }
+    if (merged['trivia_voice_rate'])  { vpRate  = parseFloat(merged['trivia_voice_rate'])  || 1; try { localStorage.setItem('trivia_voice_rate',  String(vpRate));  } catch {} }
+    if (merged['trivia_voice_pitch']) { vpPitch = parseFloat(merged['trivia_voice_pitch']) || 1; try { localStorage.setItem('trivia_voice_pitch', String(vpPitch)); } catch {} }
+    if (merged['trivia_voice_tab'])   { vpTab   = merged['trivia_voice_tab'];  try { localStorage.setItem('trivia_voice_tab', vpTab); } catch {} }
+    if (merged['trivia_narrator_v2']) { try { localStorage.setItem('trivia_narrator_v2', merged['trivia_narrator_v2']); } catch {} }
+    if (merged['applauseSettings'])   { try { applauseSettings = JSON.parse(merged['applauseSettings']); localStorage.setItem('applauseSettings', merged['applauseSettings']); } catch {} }
+    if (merged['mixedCats'])          { try { localStorage.setItem('mixedCats', merged['mixedCats']); } catch {} }
+    if (merged['trivia_custom_cats']) { try { localStorage.setItem('trivia_custom_cats', merged['trivia_custom_cats']); } catch {} }
+    if (merged['trivia_cd_length'])   { try { localStorage.setItem('trivia_cd_length', merged['trivia_cd_length']); } catch {} }
+    if (merged['trivia_presets'])     { try { localStorage.setItem('trivia_presets', merged['trivia_presets']); if (typeof renderPresets === 'function') renderPresets(); } catch {} }
+
+    // סנכרן הגדרות מקומיות חסרות לשרת (גיבוי כיוון הפוך)
+    const toSync = {};
+    SETTINGS_KEYS.forEach(k => {
+      if (serverSettings[k] === undefined) {
+        const local = localStorage.getItem(k);
+        if (local) toSync[k] = local;
+      }
+    });
+    if (Object.keys(toSync).length > 0) {
+      fetch('/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(toSync) }).catch(()=>{});
+    }
+
+  } catch (e) {
+    // fallback: קרא מ-localStorage כרגיל
+    setTheme(localStorage.getItem('trivia_theme') || '');
+    setFontSize(localStorage.getItem('trivia_fs') || 'md');
+    if (localStorage.getItem('trivia_tts') === '1') {
+      ttsOn = true;
+      const btn = document.getElementById('btn-tts');
+      if (btn) { btn.textContent = 'פעיל 🔈'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; }
+    }
+  }
+}
+
+// ========== INIT ==========
+
+loadSettingsFromServer().then(() => { loadNarratorPhrases(); renderPresets(); initCatChips(); });
 
 // On load: push any names saved in localStorage to server (survives container restarts)
 (function syncLocalNamesToServer() {
@@ -7443,240 +7460,130 @@ function maybeAddHotseatBanner(d) {
 </div>
 <!-- ===== VOICE PANEL ===== -->
 <div id="voice-panel-overlay" onclick="closeVoicePanel()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9000;"></div>
-<div id="voice-panel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9001;background:var(--s1);border:1px solid var(--border);border-radius:16px;padding:20px 18px 16px;width:min(96vw,380px);max-height:90vh;overflow-y:auto;direction:rtl;">
+<div id="voice-panel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9001;background:var(--s1);border:1px solid var(--border);border-radius:16px;padding:20px 18px 16px;width:min(96vw,360px);direction:rtl;">
 
   <!-- כותרת -->
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-    <h3 style="margin:0;font-size:1.1rem;">🎙️ בחר קול קריין</h3>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+    <h3 style="margin:0;font-size:1.05rem;">🎙️ בחר קול קריין</h3>
     <button onclick="closeVoicePanel()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--muted);">✕</button>
   </div>
 
-  <!-- טאבים: שרת / דפדפן / דמויות -->
-  <div style="display:flex;gap:6px;margin-bottom:14px;">
-    <button id="vp-tab-server" onclick="setVpTab('server')"
-      style="flex:1;padding:9px;border-radius:9px;border:2px solid var(--primary);cursor:pointer;font-size:0.88rem;font-weight:700;background:var(--primary);color:#fff;">
-      🖥️ שרת פנימי
-    </button>
-    <button id="vp-tab-device" onclick="setVpTab('device')"
-      style="flex:1;padding:9px;border-radius:9px;border:2px solid var(--border);cursor:pointer;font-size:0.88rem;font-weight:400;background:var(--bg);color:var(--text);">
-      📱 דפדפן
-    </button>
-    <button id="vp-tab-chars" onclick="setVpTab('chars')"
-      style="flex:1;padding:9px;border-radius:9px;border:2px solid var(--border);cursor:pointer;font-size:0.88rem;font-weight:400;background:var(--bg);color:var(--text);">
-      🎭 דמויות
-    </button>
-  </div>
-
-  <!-- באנר -->
-  <div id="vp-banner" style="border-radius:8px;padding:8px 10px;margin-bottom:12px;font-size:0.8rem;color:var(--muted);background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.2);"></div>
-
   <!-- רשימת קולות -->
-  <div id="vp-voice-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;"></div>
+  <div id="vp-voice-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px;"></div>
 
-  <!-- כפתורי אישור / ביטול -->
-  <div style="display:flex;gap:8px;margin-top:4px;">
-    <button onclick="confirmVoicePanel()" style="flex:2;padding:11px;border-radius:10px;border:none;background:var(--primary);color:#fff;font-size:1rem;cursor:pointer;font-weight:700;">✓ אישור</button>
+  <!-- אישור -->
+  <div style="display:flex;gap:8px;">
+    <button onclick="confirmVoicePanel()" style="flex:2;padding:11px;border-radius:10px;border:none;background:var(--blue);color:#fff;font-size:1rem;cursor:pointer;font-weight:700;">✓ אישור</button>
     <button onclick="closeVoicePanel()" style="flex:1;padding:11px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:1rem;cursor:pointer;">ביטול</button>
   </div>
 </div>
 
 <script>
-// ===== VOICE PANEL =====
-let vpTab = localStorage.getItem('trivia_voice_tab') || 'server';
-let vpPendingVoice = null; // קול שנבחר אך טרם אושר
+// ===== VOICE PANEL — פשוט: 3 קולות בלבד =====
+// אברי (גבר), הילה (אישה) — דרך השרת (Neural, עקבי בכל מחשב)
+// ברירת מחדל דפדפן — כגיבוי אם השרת לא זמין
 
-function setVpTab(tab) {
-  vpTab = tab;
-  localStorage.setItem('trivia_voice_tab', tab);
-  ['server','device','chars'].forEach(t => {
-    const el = document.getElementById('vp-tab-' + t);
-    if (!el) return;
-    const active = tab === t;
-    el.style.background  = active ? 'var(--primary)' : 'var(--bg)';
-    el.style.color       = active ? '#fff' : 'var(--text)';
-    el.style.fontWeight  = active ? '700' : '400';
-    el.style.borderColor = active ? 'var(--primary)' : 'var(--border)';
-  });
-  const banner = document.getElementById('vp-banner');
-  if (banner) {
-    if (tab === 'server') banner.textContent = '🖥️ קולות Neural מהשרת — גבר ואישה שונים לגמרי. לחץ ▶ לשמוע דוגמה.';
-    if (tab === 'device') banner.textContent = '📱 קולות הדפדפן — תלוי במה מותקן במכשיר שלך.';
-    if (tab === 'chars')  banner.textContent = '🎭 דמויות פנימיות — קולות דפדפן עם אישיות מוגדרת מראש. ללא שרת!';
-  }
-  // אל תאפס vpPendingVoice בעת החלפת טאב — המשתמש עדיין בוחר
-  renderVoiceList();
-}
+const VOICE_OPTIONS = [
+  { id: 'edge:avri', label: '👨 אברי',  desc: 'גבר עברי — Neural מהשרת' },
+  { id: 'edge:hila', label: '👩 הילה',  desc: 'אישה עברית — Neural מהשרת' },
+  { id: 'browser',   label: '🌐 ברירת מחדל', desc: 'קול הדפדפן המקומי — גיבוי' },
+];
+
+let vpPendingVoice = null;
+let vpRate  = parseFloat(localStorage.getItem('trivia_voice_rate')  || '1');
+let vpPitch = parseFloat(localStorage.getItem('trivia_voice_pitch') || '1');
 
 function openVoicePanel() {
+  vpPendingVoice = selectedVoiceName;
+  renderVoiceList();
   document.getElementById('voice-panel-overlay').style.display = 'block';
   document.getElementById('voice-panel').style.display = 'block';
-  setVpTab(vpTab);
-  vpPendingVoice = selectedVoiceName; // חייב להיות אחרי setVpTab שלא ידרוס
 }
 
 function closeVoicePanel() {
-  vpPendingVoice = null; // ביטול — לא שומרים
+  vpPendingVoice = null;
   document.getElementById('voice-panel-overlay').style.display = 'none';
   document.getElementById('voice-panel').style.display = 'none';
-}
-
-function updateVoiceLabel() {
-  const btn = document.getElementById('btn-voice');
-  if (!btn) return;
-  if (!selectedVoiceName) { btn.textContent = '🔊 קול'; return; }
-  const edgeNames = { 'edge:avri':'אברי', 'edge:hila':'הילה', 'edge:guy':'גאי', 'edge:aria':'אריה', 'edge:luca':'לוקה' };
-  if (edgeNames[selectedVoiceName]) { btn.textContent = '🔊 ' + edgeNames[selectedVoiceName]; return; }
-  const prof = getVoiceProfile(selectedVoiceName);
-  if (prof) { btn.textContent = prof.label; return; }
-  // קול דפדפן — הצג שם מקוצר
-  btn.textContent = '🔊 ' + selectedVoiceName.split(' ')[0].slice(0, 10);
 }
 
 function confirmVoicePanel() {
-  const chosen = vpPendingVoice;
-  if (chosen !== null && chosen !== undefined) {
-    setVoice(chosen);
+  if (vpPendingVoice !== null && vpPendingVoice !== undefined) {
+    setVoice(vpPendingVoice === 'browser' ? null : vpPendingVoice);
   }
   updateVoiceLabel();
-  document.getElementById('voice-panel-overlay').style.display = 'none';
-  document.getElementById('voice-panel').style.display = 'none';
-  vpPendingVoice = null;
+  closeVoicePanel();
 }
 
-function selectVoiceFromPanel(name, btn) {
-  vpPendingVoice = name;
-  // הדגש את הכפתור שנבחר
+function selectVoiceFromPanel(id, btn) {
+  vpPendingVoice = id;
   document.querySelectorAll('#vp-voice-list .vp-voice-btn').forEach(b => {
     b.style.borderColor = 'var(--border)';
-    b.style.background  = 'var(--bg)';
+    b.style.background  = 'var(--s2)';
     b.style.fontWeight  = '400';
   });
   if (btn) {
-    btn.style.borderColor = 'var(--primary)';
-    btn.style.background  = 'rgba(99,102,241,0.1)';
+    btn.style.borderColor = 'var(--blue)';
+    btn.style.background  = 'rgba(65,105,225,0.12)';
     btn.style.fontWeight  = '700';
   }
 }
 
-function testPendingVoice(voiceId) {
-  if (!voiceId) return;
-  unlockTTS(); // ודא שהאודיו מוחרג בדפדפן
-  // Edge — דרך השרת
-  if (voiceId.startsWith('edge:')) {
-    const params = new URLSearchParams({ text: 'שלום, זהו קול הקריין שלי', voice: voiceId });
-    const audio = new Audio('/tts?' + params);
-    audio.play().catch(() => {
-      // fallback — נסה דרך speakEdge הרגיל
-      speakEdge('שלום, זהו קול הקריין שלי', voiceId);
-    });
+function testPendingVoice(id) {
+  unlockTTS();
+  const sampleText = 'שלום! זהו הקול שנבחר למשחק.';
+  if (id === 'browser') {
+    if (!synth) return;
+    const u = new SpeechSynthesisUtterance(sampleText);
+    u.lang = 'he-IL'; u.rate = 0.9;
+    synth.cancel(); synth.speak(u);
     return;
   }
-  if (!synth) return;
-  const u = new SpeechSynthesisUtterance('שלום, זהו קול הקריין שלי');
-  u.lang = 'he-IL';
-  if (isVpVoice(voiceId)) {
-    // פרופיל דמות — החל pitch/rate + קול פיזי מתאים
-    const prof = getVoiceProfile(voiceId);
-    if (prof) {
-      u.pitch = prof.pitch;
-      u.rate  = prof.rate;
-      const chosen = getPhysicalVoiceForProfile(prof);
-      if (chosen) u.voice = chosen;
-    }
-  } else {
-    // קול דפדפן ספציפי לפי שם
-    const v = synth.getVoices().find(vv => vv.name === voiceId);
-    if (v) { u.voice = v; u.lang = v.lang; }
-  }
-  synth.cancel();
-  synth.speak(u);
+  // Edge — קול מהשרת
+  const params = new URLSearchParams({ text: sampleText, voice: id });
+  const audio = new Audio('/tts?' + params);
+  audio.play().catch(() => speakEdge(sampleText, id));
 }
 
 function renderVoiceList() {
   const list = document.getElementById('vp-voice-list');
   if (!list) return;
-
-  if (vpTab === 'server') {
-    // קולות שרת — edge:avri ו-edge:hila בלבד
-    const serverVoices = [
-      { id: 'edge:avri', label: '👨 אברי',  desc: 'גבר עברי Neural — הקול הכי טבעי' },
-      { id: 'edge:hila', label: '👩 הילה',  desc: 'אישה עברית Neural — שונה לגמרי מאברי' },
-      { id: 'edge:guy',  label: '👨 גאי',   desc: 'גבר אנגלי — מבטא אחר לגמרי' },
-      { id: 'edge:aria', label: '👩 אריה',  desc: 'אישה אנגלית — קול חם ונעים' },
-      { id: 'edge:luca', label: '🇮🇹 לוקה', desc: 'גבר איטלקי — מבטא ייחודי' },
-    ];
-    list.innerHTML = serverVoices.map(v => {
-      const isSel = (vpPendingVoice || selectedVoiceName) === v.id;
-      return `<div style="display:flex;gap:8px;align-items:stretch;">
-        <button class="vp-voice-btn" onclick="selectVoiceFromPanel('${v.id}', this)"
-          style="flex:1;padding:12px 14px;border-radius:10px;border:2px solid ${isSel?'var(--primary)':'var(--border)'};
-          background:${isSel?'rgba(99,102,241,0.1)':'var(--bg)'};cursor:pointer;text-align:right;
-          font-size:0.92rem;color:var(--text);font-weight:${isSel?'700':'400'}">
-          <div>${v.label}</div>
-          <div style="font-size:0.75rem;color:var(--muted);margin-top:2px;">${v.desc}</div>
-        </button>
-        <button onclick="testPendingVoice('${v.id}')" title="שמע דוגמה"
-          style="padding:0 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);
-          cursor:pointer;font-size:1.1rem;flex-shrink:0;">▶</button>
-      </div>`;
-    }).join('');
-
-  } else if (vpTab === 'chars') {
-    // דמויות פנימיות — Web Speech עם אישיות מוגדרת מראש
-    list.innerHTML = Object.entries(VOICE_PROFILES).map(([id, p]) => {
-      const isSel = (vpPendingVoice || selectedVoiceName) === id;
-      return `<div style="display:flex;gap:8px;align-items:stretch;">
-        <button class="vp-voice-btn" onclick="selectVoiceFromPanel('${id}', this)"
-          style="flex:1;padding:12px 14px;border-radius:10px;border:2px solid ${isSel?'var(--primary)':'var(--border)'};
-          background:${isSel?'rgba(99,102,241,0.1)':'var(--bg)'};cursor:pointer;text-align:right;
-          font-size:0.92rem;color:var(--text);font-weight:${isSel?'700':'400'}">
-          <div>${p.label}</div>
-          <div style="font-size:0.75rem;color:var(--muted);margin-top:2px;">${p.desc}</div>
-        </button>
-        <button onclick="testPendingVoice('${id}')" title="שמע דוגמה"
-          style="padding:0 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);
-          cursor:pointer;font-size:1.1rem;flex-shrink:0;">▶</button>
-      </div>`;
-    }).join('');
-
-  } else {
-    // קולות דפדפן
-    const voices = synth ? synth.getVoices() : [];
-    const heVoices = voices.filter(v => v.lang && (v.lang.startsWith('he') || v.lang.startsWith('iw')));
-    const toShow = heVoices.length > 0 ? heVoices : voices.slice(0, 8);
-    if (toShow.length === 0) {
-      list.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;padding:8px;">לא נמצאו קולות במכשיר</div>';
-      return;
-    }
-    list.innerHTML = toShow.map(v => {
-      const isSel = (vpPendingVoice || selectedVoiceName) === v.name;
-      return `<div style="display:flex;gap:8px;align-items:stretch;">
-        <button class="vp-voice-btn" onclick="selectVoiceFromPanel('${v.name}', this)"
-          style="flex:1;padding:10px 14px;border-radius:10px;border:2px solid ${isSel?'var(--primary)':'var(--border)'};
-          background:${isSel?'rgba(99,102,241,0.1)':'var(--bg)'};cursor:pointer;text-align:right;
-          font-size:0.88rem;color:var(--text);font-weight:${isSel?'700':'400'}">
-          ${v.name} <span style="font-size:0.75rem;color:var(--muted);">(${v.lang})</span>
-        </button>
-        <button onclick="testPendingVoice('${v.name}')" title="שמע דוגמה"
-          style="padding:0 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);
-          cursor:pointer;font-size:1.1rem;flex-shrink:0;">▶</button>
-      </div>`;
-    }).join('');
-  }
+  // קבע מה נבחר כרגע
+  const current = vpPendingVoice !== null ? vpPendingVoice
+    : (selectedVoiceName ? selectedVoiceName : 'browser');
+  list.innerHTML = VOICE_OPTIONS.map(v => {
+    const isSel = current === v.id || (v.id === 'browser' && !current);
+    return `<div style="display:flex;gap:8px;align-items:center;">
+      <button class="vp-voice-btn" onclick="selectVoiceFromPanel('${v.id}', this)"
+        style="flex:1;padding:14px 16px;border-radius:12px;
+          border:2px solid ${isSel ? 'var(--blue)' : 'var(--border)'};
+          background:${isSel ? 'rgba(65,105,225,0.12)' : 'var(--s2)'};
+          cursor:pointer;text-align:right;color:var(--text);
+          font-weight:${isSel ? '700' : '400'};transition:all 0.15s;">
+        <div style="font-size:1rem;">${v.label}</div>
+        <div style="font-size:0.77rem;color:var(--muted);margin-top:3px;">${v.desc}</div>
+      </button>
+      <button onclick="testPendingVoice('${v.id}')" title="שמע דוגמה"
+        style="width:42px;height:42px;border-radius:10px;border:1px solid var(--border);
+          background:var(--bg);cursor:pointer;font-size:1.1rem;flex-shrink:0;">▶</button>
+    </div>`;
+  }).join('');
 }
 
-// פונקציות שמירת rate/pitch (נשמר לתאימות)
-let vpRate  = parseFloat(localStorage.getItem('trivia_voice_rate')  || '1');
-let vpPitch = parseFloat(localStorage.getItem('trivia_voice_pitch') || '1');
-function updateVoiceRate(val)  { vpRate  = parseFloat(val); localStorage.setItem('trivia_voice_rate', vpRate); }
-function updateVoicePitch(val) { vpPitch = parseFloat(val); localStorage.setItem('trivia_voice_pitch', vpPitch); }
-function updateRateLabel(v)  { const el = document.getElementById('vp-rate-label');  if(el) el.textContent = 'רגיל (' + v + ')'; }
-function updatePitchLabel(v) { const el = document.getElementById('vp-pitch-label'); if(el) el.textContent = 'רגיל (' + v + ')'; }
-function testVoicePanel() { testPendingVoice(vpPendingVoice || selectedVoiceName); }
-function toggleVpDebug() {}
-function highlightFilter() {}
-function updateDeviceBanner() {}
-function setVoiceFilter() {}
+function updateVoiceLabel() {
+  const btn = document.getElementById('btn-voice');
+  if (!btn) return;
+  if (!selectedVoiceName) { btn.textContent = '🔊 דפדפן'; return; }
+  const names = { 'edge:avri': 'אברי', 'edge:hila': 'הילה' };
+  btn.textContent = '🔊 ' + (names[selectedVoiceName] || selectedVoiceName.split(' ')[0].slice(0,10));
+}
+
+function updateVoiceRate(val)  { vpRate  = parseFloat(val); saveSettingToServer('trivia_voice_rate',  String(vpRate));  }
+function updateVoicePitch(val) { vpPitch = parseFloat(val); saveSettingToServer('trivia_voice_pitch', String(vpPitch)); }
+
+// stub functions for backward compatibility
+function setVpTab() {} function toggleVpDebug() {} function highlightFilter() {}
+function updateDeviceBanner() {} function setVoiceFilter() {} function testVoicePanel() {}
+function updateRateLabel() {} function updatePitchLabel() {}
 </script>
 </body>
 </html>
