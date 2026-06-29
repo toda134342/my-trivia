@@ -963,7 +963,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
         </div>
         <div style="width:1px;height:16px;background:var(--border);"></div>
         <span style="font-size:0.72rem;color:var(--muted);">🔈 הקראה:</span>
-        <button onclick="toggleTTS()" class="btn btn-ghost btn-sm" id="btn-tts">כבוי</button>
+        <button onclick="toggleTTS()" class="btn btn-ghost btn-sm" id="btn-tts" style="color:var(--green);border-color:var(--green);">פעיל 🔈</button>
         <button onclick="openVoicePanel()" class="btn btn-ghost btn-sm" id="btn-voice-panel" style="padding:3px 10px;font-size:0.82rem;">⚙️ קול</button>
         <span id="voice-label" style="font-size:0.72rem;color:var(--muted);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
       </div>
@@ -1194,7 +1194,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
       <!-- בחירת קול -->
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <span style="font-size:0.85rem;color:var(--muted);min-width:60px;">🔊 קריין:</span>
-        <button id="rb-btn-tts" onclick="toggleTTS();rbSyncTTS()" class="btn btn-ghost btn-sm" style="min-width:64px;">כבוי</button>
+        <button id="rb-btn-tts" onclick="toggleTTS();rbSyncTTS()" class="btn btn-ghost btn-sm" style="min-width:64px;color:var(--green);border-color:var(--green);">פעיל 🔊</button>
         <button onclick="openVoicePanel()" class="btn btn-ghost btn-sm" style="display:flex;align-items:center;gap:5px;">
           ⚙️ בחר קול <span id="rb-voice-label" style="color:var(--gold);font-size:0.8rem;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
         </button>
@@ -2041,7 +2041,7 @@ function showCountdown(mode, onDone, introText) {
         if (window._pendingSpeak) {
           const ps = window._pendingSpeak;
           window._pendingSpeak = null;
-          speakQuestion(ps.question, ps.answers);
+          speakQuestionThenStart(ps.question, ps.answers, ps.timeLimit||22);
         }
         // Fallback: if game screen still shows "ממתין" after countdown, request resend
         if (['pyramid','passnote'].includes(gameMode)) {
@@ -3709,7 +3709,6 @@ function handle(d){
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;p._first=false;});
       renderQuestion(d);
       maybeAddHotseatBanner(d);
-      startTimer(d.timeLimit||22);
       buildProgress(d.index,d.total);updateStatus();
       startMusic();
       if(ttsOn) {
@@ -3721,10 +3720,14 @@ function handle(d){
           preloadEdge(fullText.slice(0,500), selectedVoiceName, EDGE_SPEED);
         }
         if (countdownActive) {
-          window._pendingSpeak = { question: d.question, answers: d.answers };
+          window._pendingSpeak = { question: d.question, answers: d.answers, timeLimit: d.timeLimit||22 };
         } else {
-          setTimeout(()=>speakQuestion(d.question, d.answers), 200);
+          // קריין קורא קודם — טיימר מתחיל רק אחרי שמסיים
+          speakQuestionThenStart(d.question, d.answers, d.timeLimit||22);
         }
+      } else {
+        // אין קריין — טיימר מתחיל מיד
+        startTimer(d.timeLimit||22);
       }
       break;
 
@@ -3831,9 +3834,9 @@ function handle(d){
       showPriceRound(d);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: (d.question)||'', answers: d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion(d.question, d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: (d.question)||'', answers: d.opts||[], timeLimit: d.timeLimit||18 }; }
+        else { speakQuestionThenStart(d.question, d.opts||[], d.timeLimit||18); }
+      } else { startTimer(d.timeLimit||18); }
       break;
 
     case 'tfRound':
@@ -3841,18 +3844,20 @@ function handle(d){
       currentQ={answers:['נכון','לא נכון']};
       showTFRound(d);
       updateStatus();
-      if(ttsOn) setTimeout(()=>speak(d.question, 0.9, 1),400);
+      if(ttsOn) {
+        if(countdownActive) { window._pendingSpeak = { question: d.question, answers: ['נכון','לא נכון'], timeLimit: d.timeLimit||12 }; }
+        else { speakQuestionThenStart(d.question, ['נכון','לא נכון'], d.timeLimit||12); }
+      } else { startTimer(d.timeLimit||12); }
       break;
 
     case 'majorityRound':
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;});
       showMajorityRound(d);
-      startTimer(15);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: (d.question)||'', answers: d.options||d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion(d.question, d.options||d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: (d.question)||'', answers: d.options||d.opts||[], timeLimit: 15 }; }
+        else { speakQuestionThenStart(d.question, d.options||d.opts||[], 15); }
+      } else { startTimer(15); }
       break;
 
     case 'majorityReveal':
@@ -3866,12 +3871,11 @@ function handle(d){
     case 'whoRound':
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;});
       showWhoRound(d);
-      startTimer(d.timeLimit||20);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: ('מי אמר: '+(d.quote||''))||'', answers: d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion('מי אמר: '+(d.quote||''), d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: ('מי אמר: '+(d.quote||''))||'', answers: d.opts||[], timeLimit: d.timeLimit||20 }; }
+        else { speakQuestionThenStart('מי אמר: '+(d.quote||''), d.opts||[], d.timeLimit||20); }
+      } else { startTimer(d.timeLimit||20); }
       break;
 
     case 'whoReveal':
@@ -3949,9 +3953,9 @@ function handle(d){
       showEmojiRound(d);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: ('מה מייצגים האמוג\'ים?')||'', answers: d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion('מה מייצגים האמוג\'ים?', d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: ('מה מייצגים האמוג\'ים?')||'', answers: d.opts||[], timeLimit: d.timeLimit||20 }; }
+        else { speakQuestionThenStart('מה מייצגים האמוג\'ים?', d.opts||[], d.timeLimit||20); }
+      } else { startTimer(d.timeLimit||20); }
       break;
 
     case 'hotseatPlayer':
@@ -3965,48 +3969,44 @@ function handle(d){
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;});
       currentQ={answers:d.opts};
       showGuessSongRound(d);
-      startTimer(d.timeLimit||20);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: ('נחשו את השיר: '+(d.clue||''))||'', answers: d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion('נחשו את השיר: '+(d.clue||''), d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: ('נחשו את השיר: '+(d.clue||''))||'', answers: d.opts||[], timeLimit: d.timeLimit||20 }; }
+        else { speakQuestionThenStart('נחשו את השיר: '+(d.clue||''), d.opts||[], d.timeLimit||20); }
+      } else { startTimer(d.timeLimit||20); }
       break;
 
     case 'whoAmIRound':
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;});
       currentQ={answers:d.opts};
       showWhoAmIRound(d);
-      startTimer(d.timeLimit||25);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: ('מי אני? '+(d.clue||''))||'', answers: d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion('מי אני? '+(d.clue||''), d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: ('מי אני? '+(d.clue||''))||'', answers: d.opts||[], timeLimit: d.timeLimit||25 }; }
+        else { speakQuestionThenStart('מי אני? '+(d.clue||''), d.opts||[], d.timeLimit||25); }
+      } else { startTimer(d.timeLimit||25); }
       break;
 
     case 'bcRound':
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;});
       currentQ={answers:d.opts};
       showBCRound(d);
-      startTimer(d.timeLimit||20);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: (d.question)||'', answers: d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion(d.question, d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: (d.question)||'', answers: d.opts||[], timeLimit: d.timeLimit||20 }; }
+        else { speakQuestionThenStart(d.question, d.opts||[], d.timeLimit||20); }
+      } else { startTimer(d.timeLimit||20); }
       break;
 
     case 'wfRound':
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;});
       currentQ={answers:d.opts};
       showWFRound(d);
-      startTimer(d.timeLimit||18);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: (d.question)||'', answers: d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion(d.question, d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: (d.question)||'', answers: d.opts||[], timeLimit: d.timeLimit||18 }; }
+        else { speakQuestionThenStart(d.question, d.opts||[], d.timeLimit||18); }
+      } else { startTimer(d.timeLimit||18); }
       break;
 
     case 'swRound':
@@ -4025,12 +4025,11 @@ function handle(d){
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;});
       currentQ={answers:d.answers};
       showPyramidRound(d);
-      startTimer(d.timeLimit||20);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: d.question, answers: d.answers||[] }; }
-        else { setTimeout(()=>speakQuestion(d.question, d.answers||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: d.question, answers: d.answers||[], timeLimit: d.timeLimit||20 }; }
+        else { speakQuestionThenStart(d.question, d.answers||[], d.timeLimit||20); }
+      } else { startTimer(d.timeLimit||20); }
       break;
 
     case 'pyramidReveal':
@@ -4053,9 +4052,9 @@ function handle(d){
       showPicRound(d);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: d.desc||'', answers: d.opts||[] }; }
-        else { setTimeout(()=>speakQuestion(d.desc||'', d.opts||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: d.desc||'', answers: d.opts||[], timeLimit: d.timeLimit||20 }; }
+        else { speakQuestionThenStart(d.desc||'', d.opts||[], d.timeLimit||20); }
+      } else { startTimer(d.timeLimit||20); }
       break;
 
     case 'picReveal':
@@ -4070,12 +4069,11 @@ function handle(d){
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;p._ddMode=null;});
       currentQ={answers:d.answers};
       showDDRound(d);
-      startTimer(d.timeLimit||22);
       updateStatus();
       if(ttsOn) {
-        if(countdownActive) { window._pendingSpeak = { question: d.question, answers: d.answers||[] }; }
-        else { setTimeout(()=>speakQuestion(d.question, d.answers||[]),400); }
-      }
+        if(countdownActive) { window._pendingSpeak = { question: d.question, answers: d.answers||[], timeLimit: d.timeLimit||22 }; }
+        else { speakQuestionThenStart(d.question, d.answers||[], d.timeLimit||22); }
+      } else { startTimer(d.timeLimit||22); }
       break;
 
     case 'ddChoice':
@@ -4935,7 +4933,7 @@ function setFontSize(size) {
 }
 
 // ========== TTS ==========
-let ttsOn = false;
+let ttsOn = true;
 let selectedVoiceName = null; // null = auto
 const synth = window.speechSynthesis;
 let _ttsUnlocked = false;
@@ -5141,6 +5139,8 @@ function isVpVoice(name) {
 function cancelAllSpeech() {
   if (_edgeAudio) { try { _edgeAudio.pause(); _edgeAudio.currentTime = 0; _edgeAudio = null; } catch {} }
   if (synth) synth.cancel();
+  // הסר dim overlay אם קיים
+  if (typeof hideNarratorDim === 'function') hideNarratorDim();
 }
 
 function isEdgeVoice(name) {
@@ -5278,6 +5278,91 @@ function speakQuestion(question, answers) {
     speakEdge(fullText.slice(0,500), selectedVoiceName, EDGE_SPEED);
   } else {
     speak(fullText);
+  }
+}
+
+// ===== קריין מקריא קודם — טיימר ומסך מוארים רק אחרי שסיים =====
+function showNarratorDim() {
+  let el = document.getElementById('narrator-dim-overlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'narrator-dim-overlay';
+    el.style.cssText = 'position:fixed;inset:0;z-index:44;background:rgba(7,7,26,0.78);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;pointer-events:none;transition:opacity 0.3s;';
+    el.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:14px;"><div style="font-size:3rem;animation:cdPop 0.5s cubic-bezier(0.34,1.56,0.64,1);">🎙️</div><div style="font-family:\'Frank Ruhl Libre\',serif;font-size:1.4rem;font-weight:700;color:var(--gold);letter-spacing:2px;">הקשיבו לשאלה...</div></div>';
+    document.body.appendChild(el);
+  }
+  el.style.opacity = '1';
+  el.style.display = 'flex';
+}
+function hideNarratorDim() {
+  const el = document.getElementById('narrator-dim-overlay');
+  if (!el) return;
+  el.style.opacity = '0';
+  setTimeout(() => { el.style.display = 'none'; }, 320);
+}
+
+function speakQuestionThenStart(question, answers, timeLimit) {
+  if (!ttsOn || window._ttsBlocked) {
+    startTimer(timeLimit||22);
+    return;
+  }
+  cancelAllSpeech();
+  showNarratorDim();
+
+  const nums = ['אחת','שתיים','שלוש','ארבע'];
+  const answersText = (answers||[]).map((a,i)=>`${nums[i]}... ${stripEmoji(a)}`).join('... ');
+  const fullText = stripEmoji(question||'') + (answersText ? ('... '+answersText) : '');
+
+  const onDone = () => {
+    hideNarratorDim();
+    startTimer(timeLimit||22);
+  };
+
+  // Fallback timeout — in case onended never fires (max 18s)
+  const fallbackId = setTimeout(onDone, 18000);
+  const safeDone = () => { clearTimeout(fallbackId); onDone(); };
+
+  if (isEdgeVoice(selectedVoiceName)) {
+    speakEdgeWithCallback(fullText.slice(0,500), selectedVoiceName, EDGE_SPEED, safeDone);
+  } else {
+    // Web Speech
+    if (!synth) { safeDone(); return; }
+    const u = new SpeechSynthesisUtterance(fullText);
+    applyVoice(u);
+    u.rate = 0.9; u.pitch = 1.0;
+    u.onend = safeDone;
+    u.onerror = safeDone;
+    synth.cancel();
+    setTimeout(() => { if (!window._ttsBlocked) synth.speak(u); else safeDone(); }, 50);
+  }
+}
+
+function speakEdgeWithCallback(text, voiceId, speed, onDone) {
+  if (!text || !ttsOn) { onDone && onDone(); return; }
+  if (window._ttsBlocked) { onDone && onDone(); return; }
+  if (!isEdgeVoice(voiceId)) { onDone && onDone(); return; }
+  text = text.slice(0, 500);
+  const spd = speed || EDGE_SPEED;
+  if (_edgeAudio) { try { _edgeAudio.pause(); _edgeAudio.currentTime = 0; _edgeAudio = null; } catch {} }
+  if (synth) synth.cancel();
+  const key = voiceId + '|' + spd + '|' + text;
+  const doPlay = (url) => {
+    if (!ttsOn || window._ttsBlocked) { onDone && onDone(); return; }
+    const audio = new Audio(url);
+    audio._requestKey = key;
+    _edgeAudio = audio;
+    audio.onended = () => { onDone && onDone(); };
+    audio.onerror = () => { onDone && onDone(); };
+    audio.play().catch(() => { speakWebSpeech(text); onDone && setTimeout(onDone, 3000); });
+  };
+  if (_edgeBlobCache.has(key)) {
+    doPlay(_edgeBlobCache.get(key));
+  } else {
+    const requestKey = key;
+    preloadEdge(text, voiceId, spd).then(url => {
+      if (url && (_edgeAudio === null || _edgeAudio._requestKey === requestKey)) doPlay(url);
+      else { speakWebSpeech(text); onDone && setTimeout(onDone, 3000); }
+    });
   }
 }
 
@@ -6585,7 +6670,7 @@ function showPicRound(d) {
           </div>`).join('')}
       </div>
     </div>`;
-  startTimer(d.timeLimit||20);
+  // startTimer מנוהל מ-case picRound דרך speakQuestionThenStart
 }
 
 function showPicReveal(d) {
@@ -7359,7 +7444,7 @@ function showPriceRound(d) {
           </div>
         </div>`).join('')}
     </div>`;
-  startTimer(d.timeLimit||18);
+  // startTimer מנוהל מ-case priceRound דרך speakQuestionThenStart
 }
 
 // ========== EMOJI QUIZ UI ==========
@@ -7384,7 +7469,7 @@ function showEmojiRound(d) {
           </div>`).join('')}
       </div>
     </div>`;
-  startTimer(d.timeLimit||15);
+  // startTimer מנוהל מ-case emojiRound דרך speakQuestionThenStart
 }
 
 // ========== TRUE/FALSE UI ==========
@@ -7416,7 +7501,7 @@ function showTFRound(d) {
         <div id="tf-f-cnt" style="font-size:0.72rem;color:var(--muted);margin-top:4px;"></div>
       </div>
     </div>`;
-  startTimer(d.timeLimit||12);
+  // startTimer מנוהל מ-case tfRound דרך speakQuestionThenStart
 }
 
 // ========== HOTSEAT UI — adds banner on top of standard renderQuestion ==========
