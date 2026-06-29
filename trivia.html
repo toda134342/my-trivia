@@ -1361,6 +1361,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
         </select>
         <button class="sbtn" id="btn-sfx" onclick="toggleSfx()" title="צלילים">🔊</button>
         <button class="sbtn" id="btn-tts-game" onclick="toggleTTSGame()" title="הקראה">📢</button>
+        <button class="sbtn" onclick="saveTTSLogs()" title="שמור לוגים TTS">📋</button>
         <button class="sbtn" onclick="goAdmin()" title="ניהול">⚙️</button>
       </div>
     </div>
@@ -2011,12 +2012,16 @@ function showCountdown(mode, onDone, introText) {
               <div class="cd-num" id="cd-num" style="color:var(--gold)">${getCountdownLength()}</div>
               <div class="cd-sub" id="cd-sub">היכונו!</div>
             `;
+            ttsLog('countdown done → onDone(), countdownActive=false');
             onDone();
             countdownActive = false;
             if (window._pendingSpeak) {
               const ps = window._pendingSpeak;
               window._pendingSpeak = null;
+              ttsLog('countdown: firing _pendingSpeak', { q: (ps.question||'').slice(0,40), tl: ps.timeLimit });
               speakQuestionThenStart(ps.question, ps.answers, ps.timeLimit||22);
+            } else {
+              ttsLog('countdown: no _pendingSpeak');
             }
             if (['pyramid','passnote'].includes(gameMode)) {
               setTimeout(() => {
@@ -3713,13 +3718,14 @@ function handle(d){
           preloadEdge(fullText.slice(0,500), selectedVoiceName, EDGE_SPEED);
         }
         if (countdownActive) {
+          ttsLog('case question: countdownActive → _pendingSpeak', { q: (d.question||'').slice(0,40) });
           window._pendingSpeak = { question: d.question, answers: d.answers, timeLimit: d.timeLimit||22 };
         } else {
-          // קריין קורא קודם — טיימר מתחיל רק אחרי שמסיים
+          ttsLog('case question: calling speakQuestionThenStart');
           speakQuestionThenStart(d.question, d.answers, d.timeLimit||22);
         }
       } else {
-        // אין קריין — טיימר מתחיל מיד
+        ttsLog('case question: ttsOn=false → startTimer immediately');
         startTimer(d.timeLimit||22);
       }
       break;
@@ -4412,6 +4418,7 @@ function updateStatus(){
 
 // ========== TIMER ==========
 function startTimer(sec){
+  ttsLog('startTimer', { sec, narratorDimVisible: document.getElementById('narrator-dim-overlay')?.style?.display !== 'none' });
   stopTimer();
   let el=0;
   const fill=()=>document.getElementById('tfill');
@@ -5139,21 +5146,51 @@ let _ttsSeq          = 0;         // counter — מונע ירי של callbacks 
 let _ttsNarratorDone = null;      // callback לסיום הקראת שאלה
 let _ttsFallback     = null;      // timer fallback
 
+// ===== TTS DEBUG LOGGER =====
+const TTS_LOG = [];
+function ttsLog(msg, data) {
+  const entry = { t: Date.now(), msg, data };
+  TTS_LOG.push(entry);
+  if (TTS_LOG.length > 200) TTS_LOG.shift();
+  console.log(`[TTS ${new Date().toISOString().substr(11,12)}] ${msg}`, data !== undefined ? data : '');
+}
+window.ttsDump = () => {
+  console.table(TTS_LOG.map(e => ({
+    time: new Date(e.t).toISOString().substr(11,12),
+    msg: e.msg,
+    data: JSON.stringify(e.data||'').slice(0,80)
+  })));
+};
+
+function saveTTSLogs() {
+  if (!TTS_LOG.length) { alert('אין לוגים עדיין — הרץ משחק קודם'); return; }
+  const lines = TTS_LOG.map(e => {
+    const time = new Date(e.t).toISOString().substr(11, 12);
+    const data = e.data !== undefined ? '  →  ' + JSON.stringify(e.data) : '';
+    return `[${time}] ${e.msg}${data}`;
+  });
+  lines.unshift('=== TTS LOGS — ' + new Date().toLocaleString('he-IL') + ' ===');
+  lines.unshift('voice=' + (selectedVoiceName||'none') + '  ttsOn=' + ttsOn + '  _ttsSeq=' + _ttsSeq);
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'tts-logs-' + new Date().toISOString().substr(0,19).replace(/:/g,'-') + '.txt';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 function cancelAllSpeech() {
-  _ttsSeq++;                      // בטל כל callback תלוי
+  ttsLog('cancelAllSpeech', { seq: _ttsSeq, pri: _ttsCurrentPri, hadAudio: !!_edgeAudio, hadFallback: !!_ttsFallback });
+  _ttsSeq++;
   _ttsCurrentPri   = -1;
   _ttsNarratorDone = null;
   if (_ttsFallback) { clearTimeout(_ttsFallback); _ttsFallback = null; }
-  // עצור Edge audio
   if (_edgeAudio) {
     try { _edgeAudio.onended = null; _edgeAudio.onerror = null;
           _edgeAudio.pause(); _edgeAudio.currentTime = 0; _edgeAudio = null; } catch {}
   }
-  // עצור Web Speech
   if (synth) synth.cancel();
-  // נקה queue
   _ttsQueue = []; _ttsBusy = false;
-  // הסר dim overlay
   if (typeof hideNarratorDim === 'function') hideNarratorDim();
 }
 
@@ -5161,32 +5198,46 @@ function isEdgeVoice(name) {
   return name && name.startsWith('edge:');
 }
 
-// פונקציה פנימית — מנגן טקסט ברמת עדיפות נתונה, קורא onEnd כשמסיים
 function _ttsPlay(text, pri, onEnd) {
-  if (!ttsOn || !text || window._ttsBlocked) { onEnd && onEnd(); return; }
+  const priName = Object.keys(TTS_PRI).find(k => TTS_PRI[k] === pri) || pri;
+  if (!ttsOn) { ttsLog(`_ttsPlay SKIP — ttsOn=false`, { pri: priName }); onEnd && onEnd(); return; }
+  if (window._ttsBlocked) { ttsLog(`_ttsPlay SKIP — _ttsBlocked`, { pri: priName }); onEnd && onEnd(); return; }
+  if (!text) { ttsLog(`_ttsPlay SKIP — empty text`, { pri: priName }); onEnd && onEnd(); return; }
   text = stripEmoji(text).slice(0, 500);
   if (!text) { onEnd && onEnd(); return; }
 
-  // בטל נוכחי רק אם עדיפות חדשה >= נוכחית
-  if (pri < _ttsCurrentPri) { return; }  // נמוכה יותר — לא מנגן
+  if (pri < _ttsCurrentPri) {
+    ttsLog(`_ttsPlay SKIP — lower pri ${priName} < current ${_ttsCurrentPri}`, { text: text.slice(0,40) });
+    return;
+  }
+
+  ttsLog(`_ttsPlay START`, { pri: priName, seq: _ttsSeq + 1, voice: selectedVoiceName, text: text.slice(0, 60) });
   cancelAllSpeech();
   _ttsCurrentPri = pri;
 
   const seq = ++_ttsSeq;
 
   const done = () => {
-    if (_ttsSeq !== seq) return;  // קריאה ישנה — התעלם
+    if (_ttsSeq !== seq) {
+      ttsLog(`_ttsPlay done STALE — seq ${seq} vs current ${_ttsSeq} (ignored)`);
+      return;
+    }
+    ttsLog(`_ttsPlay DONE`, { seq, pri: priName });
     _ttsCurrentPri = -1;
     _ttsFallback = null;
     if (onEnd) onEnd();
   };
 
-  // fallback timeout — 20 שניות מקסימום
-  _ttsFallback = setTimeout(done, 20000);
+  _ttsFallback = setTimeout(() => {
+    ttsLog(`_ttsPlay FALLBACK FIRED`, { seq, pri: priName, text: text.slice(0,40) });
+    done();
+  }, 20000);
 
   if (isEdgeVoice(selectedVoiceName)) {
+    ttsLog(`_ttsPlay → Edge`, { voice: selectedVoiceName, cached: _edgeBlobCache.has(selectedVoiceName + '|' + EDGE_SPEED + '|' + text) });
     _ttsPlayEdge(text, selectedVoiceName, done);
   } else {
+    ttsLog(`_ttsPlay → WebSpeech`);
     _ttsPlayWeb(text, done);
   }
 }
@@ -5194,35 +5245,50 @@ function _ttsPlay(text, pri, onEnd) {
 function _ttsPlayEdge(text, voiceId, done) {
   const spd = EDGE_SPEED;
   const key = voiceId + '|' + spd + '|' + text;
+  const cached = _edgeBlobCache.has(key);
+  ttsLog(`_ttsPlayEdge`, { cached, text: text.slice(0,40) });
 
   const doPlay = (url) => {
-    if (!ttsOn || window._ttsBlocked) { done(); return; }
+    if (!ttsOn || window._ttsBlocked) {
+      ttsLog(`_ttsPlayEdge doPlay ABORTED — ttsOn=${ttsOn} blocked=${window._ttsBlocked}`);
+      done(); return;
+    }
     const audio = new Audio(url);
-    audio.onended = done;
-    audio.onerror = done;
+    audio.onended = () => { ttsLog('Edge audio.onended'); done(); };
+    audio.onerror = (e) => { ttsLog('Edge audio.onerror', e?.type); done(); };
     _edgeAudio = audio;
-    audio.play().catch(() => { _ttsPlayWeb(text, done); });
+    audio.play()
+      .then(() => ttsLog('Edge audio.play() OK'))
+      .catch(e => {
+        ttsLog('Edge audio.play() FAILED — falling back to WebSpeech', e?.message);
+        _ttsPlayWeb(text, done);
+      });
   };
 
-  if (_edgeBlobCache.has(key)) {
+  if (cached) {
+    ttsLog('Edge: playing from cache');
     doPlay(_edgeBlobCache.get(key));
   } else {
+    ttsLog('Edge: fetching from server...');
     preloadEdge(text, voiceId, spd).then(url => {
-      if (!url) { _ttsPlayWeb(text, done); return; }
+      if (!url) { ttsLog('Edge: fetch returned null → WebSpeech'); _ttsPlayWeb(text, done); return; }
+      ttsLog('Edge: fetch OK, playing');
       doPlay(url);
-    });
+    }).catch(e => { ttsLog('Edge: preloadEdge error', e?.message); _ttsPlayWeb(text, done); });
   }
 }
 
 function _ttsPlayWeb(text, done) {
-  if (!synth) { done(); return; }
+  ttsLog('_ttsPlayWeb', { hasSynth: !!synth, text: text.slice(0,40) });
+  if (!synth) { ttsLog('_ttsPlayWeb: no synth'); done(); return; }
   const u = new SpeechSynthesisUtterance(text);
   applyVoice(u);
   u.rate  = typeof vpRate  !== 'undefined' ? vpRate  : 0.9;
   u.pitch = typeof vpPitch !== 'undefined' ? vpPitch : 1.0;
-  u.onend  = done;
-  u.onerror = done;
+  u.onend  = () => { ttsLog('WebSpeech onend'); done(); };
+  u.onerror = (e) => { ttsLog('WebSpeech onerror', e?.error); done(); };
   synth.speak(u);
+  ttsLog('WebSpeech.speak() called');
 }
 
 // preload — fetch → blob → שמור בcache → החזר Promise<blobUrl>
@@ -5290,6 +5356,7 @@ function stripEmoji(t) {
 
 // ===== dim overlay =====
 function showNarratorDim() {
+  ttsLog('showNarratorDim');
   let el = document.getElementById('narrator-dim-overlay');
   if (!el) {
     el = document.createElement('div');
@@ -5301,6 +5368,7 @@ function showNarratorDim() {
   el.style.opacity = '1'; el.style.display = 'flex';
 }
 function hideNarratorDim() {
+  ttsLog('hideNarratorDim');
   const el = document.getElementById('narrator-dim-overlay');
   if (!el || el.style.display === 'none') return;
   el.style.opacity = '0';
@@ -5312,7 +5380,11 @@ function speakQuestion(question, answers) { /* dead — kept for safety, never c
 
 function speakQuestionThenStart(question, answers, timeLimit) {
   const tl = timeLimit || 22;
-  if (!ttsOn || window._ttsBlocked) { startTimer(tl); return; }
+  ttsLog('speakQuestionThenStart', { ttsOn, blocked: window._ttsBlocked, tl, q: (question||'').slice(0,50) });
+  if (!ttsOn || window._ttsBlocked) {
+    ttsLog('speakQuestionThenStart → skip narrator, startTimer immediately');
+    startTimer(tl); return;
+  }
 
   const nums = ['אחת','שתיים','שלוש','ארבע'];
   const answersText = (answers||[]).map((a,i)=>`${nums[i]}... ${stripEmoji(a)}`).join('... ');
@@ -5323,6 +5395,7 @@ function speakQuestionThenStart(question, answers, timeLimit) {
   showNarratorDim();
 
   const onDone = () => {
+    ttsLog('speakQuestionThenStart → onDone → hideNarratorDim + startTimer', { tl });
     _ttsNarratorDone = null;
     hideNarratorDim();
     startTimer(tl);
@@ -5330,7 +5403,9 @@ function speakQuestionThenStart(question, answers, timeLimit) {
   _ttsNarratorDone = onDone;
 
   _ttsPlay(fullText, TTS_PRI.QUESTION, () => {
+    ttsLog('speakQuestionThenStart → _ttsPlay callback, calling onDone if still current');
     if (_ttsNarratorDone === onDone) onDone();
+    else ttsLog('speakQuestionThenStart → onDone already replaced/cleared, skip');
   });
 }
 
