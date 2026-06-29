@@ -1974,10 +1974,36 @@ function showCountdown(mode, onDone, introText) {
     } catch(e){}
   }
 
+  // ספירה לאחור — Audio ישיר, לא דרך _ttsPlay (לא מבטל ולא נדרס)
+  let _cdAudio = null;
   function speakCdWord(word) {
     if (!ttsOn) return;
-    // ספירה לאחור — עדיפות LOW, לא דורסת שום דבר חשוב
-    _ttsPlay(word, TTS_PRI.LOW, null);
+    if (isEdgeVoice(selectedVoiceName)) {
+      // נסה מcache קודם
+      const key = selectedVoiceName + '|' + EDGE_SPEED + '|' + word;
+      const cached = _edgeBlobCache.get(key);
+      if (cached) {
+        if (_cdAudio) { try { _cdAudio.pause(); } catch {} }
+        _cdAudio = new Audio(cached);
+        _cdAudio.play().catch(() => {});
+      } else {
+        // אם אין בcache — fetch בשקט (לא חוסם)
+        preloadEdge(word, selectedVoiceName, EDGE_SPEED).then(url => {
+          if (!url) return;
+          if (_cdAudio) { try { _cdAudio.pause(); } catch {} }
+          _cdAudio = new Audio(url);
+          _cdAudio.play().catch(() => {});
+        });
+      }
+      return;
+    }
+    // Web Speech fallback
+    if (!synth) return;
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(word);
+    u.lang = 'he-IL'; u.rate = 1.1; u.pitch = 1.2;
+    applyVoice(u);
+    synth.speak(u);
   }
 
   function tick() {
@@ -2001,8 +2027,7 @@ function showCountdown(mode, onDone, introText) {
       overlay.innerHTML = `<div class="cd-go">${goWord}</div>`;
       cdTick(0);
       if (ttsOn) {
-        // נגן goWord ברמת LOW — אחרי שמסיים, המתן 300ms ואז הפעל onDone
-        _ttsPlay(goWord, TTS_PRI.LOW, () => {
+        const doAfterGo = () => {
           setTimeout(() => {
             overlay.style.display = 'none';
             overlay.innerHTML = `
@@ -2034,7 +2059,31 @@ function showCountdown(mode, onDone, introText) {
               }, 500);
             }
           }, 300);
-        });
+        };
+
+        // נגן goWord ישירות עם Audio — לא דרך _ttsPlay
+        if (isEdgeVoice(selectedVoiceName)) {
+          const key = selectedVoiceName + '|' + EDGE_SPEED + '|' + goWord;
+          const cached = _edgeBlobCache.get(key);
+          const playGoAudio = (url) => {
+            if (!url) { doAfterGo(); return; }
+            const a = new Audio(url);
+            a.onended = doAfterGo;
+            a.onerror = doAfterGo;
+            a.play().catch(doAfterGo);
+          };
+          if (cached) { playGoAudio(cached); }
+          else { preloadEdge(goWord, selectedVoiceName, EDGE_SPEED).then(playGoAudio).catch(doAfterGo); }
+        } else {
+          // Web Speech
+          if (synth) {
+            synth.cancel();
+            const u = new SpeechSynthesisUtterance(goWord);
+            applyVoice(u); u.rate = 1.0;
+            u.onend = doAfterGo; u.onerror = doAfterGo;
+            synth.speak(u);
+          } else { doAfterGo(); }
+        }
       } else {
         setTimeout(() => {
           overlay.style.display = 'none';
@@ -5328,8 +5377,9 @@ function speakWebSpeech(text, rate, pitch) {
   synth.speak(u);
 }
 
-// speak() — קריאה כללית (הכרזות, קטגוריות, welcome) — עדיפות LOW
+// speak() — קריאה כללית (הכרזות, קטגוריות, welcome) — לא דורסת ספירה
 function speak(text, rate, pitch) {
+  if (!ttsOn || window._ttsBlocked || countdownActive) return;
   _ttsPlay(text||'', TTS_PRI.LOW, null);
 }
 
