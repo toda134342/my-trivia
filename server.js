@@ -848,8 +848,8 @@ async function ensurePiperVoice() {
 
   const download = (url, dest) => new Promise((resolve, reject) => {
     log('⬇️', `Piper: מוריד ${url.split('/').pop()}...`);
-    const proc = spawn('wget', ['-q', '--timeout=120', url, '-O', dest], { timeout: 130000 });
-    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`wget נכשל קוד ${code}`)));
+    const proc = spawn('curl', ['-sL', '--max-time', '120', '-o', dest, url], { timeout: 130000 });
+    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`curl נכשל קוד ${code}`)));
     proc.on('error', reject);
   });
 
