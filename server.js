@@ -834,32 +834,33 @@ const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
 const VOICE_NAME = 'he_IL-local-high';
 let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
 
-// הורדת המודל בעלייה (אם עוד לא קיים)
+// הורדת המודל בעלייה (אם עוד לא קיים) — wget ישירות מ-HuggingFace
+const HF_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/he/he_IL/local/high';
 async function ensurePiperVoice() {
   const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
-  if (fs.existsSync(onnxPath)) {
+  const jsonPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx.json');
+  if (fs.existsSync(onnxPath) && fs.existsSync(jsonPath)) {
     log('✅', `Piper: מודל קיים: ${onnxPath}`);
     PIPER_MODEL = onnxPath;
     return;
   }
-  log('⬇️', `Piper: מוריד מודל עברית "${VOICE_NAME}"...`);
   fs.mkdirSync(VOICE_DIR, { recursive: true });
-  return new Promise((resolve) => {
-    const dl = spawn('/opt/piper-env/bin/python3', [
-      '-m', 'piper.download', '--directory', VOICE_DIR, VOICE_NAME
-    ], { timeout: 120000 });
-    dl.stderr.on('data', d => process.stderr.write(d));
-    dl.stdout.on('data', d => process.stdout.write(d));
-    dl.on('close', (code) => {
-      if (code === 0 && fs.existsSync(onnxPath)) {
-        log('✅', `Piper: מודל הורד → ${onnxPath}`);
-        PIPER_MODEL = onnxPath;
-      } else {
-        log('🔇', `Piper: הורדת מודל נכשלה (קוד ${code})`);
-      }
-      resolve();
-    });
+
+  const download = (url, dest) => new Promise((resolve, reject) => {
+    log('⬇️', `Piper: מוריד ${url.split('/').pop()}...`);
+    const proc = spawn('wget', ['-q', '--timeout=120', url, '-O', dest], { timeout: 130000 });
+    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`wget נכשל קוד ${code}`)));
+    proc.on('error', reject);
   });
+
+  try {
+    await download(`${HF_BASE}/${VOICE_NAME}.onnx`, onnxPath);
+    await download(`${HF_BASE}/${VOICE_NAME}.onnx.json`, jsonPath);
+    log('✅', `Piper: מודל הורד → ${onnxPath}`);
+    PIPER_MODEL = onnxPath;
+  } catch (e) {
+    log('🔇', `Piper: הורדת מודל נכשלה — ${e.message}`);
+  }
 }
 
 // ===== פרופילי קולות גבריים =====
@@ -925,7 +926,7 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
       '--length_scale', String(Math.round((1.0 / finalRate) * 100) / 100),  // length_scale הפוך מ-rate
     ];
 
-    const proc = spawn(PIPER_BIN, piperArgs, { timeout: 15000, env: { ...process.env, ESPEAK_DATA_PATH: '/opt/piper-env/lib/python3.11/site-packages/piper_phonemize/espeak-ng-data' } });
+    const proc = spawn(PIPER_BIN, piperArgs, { timeout: 15000 });
 
     let errBuf = '';
     proc.stderr.on('data', d => { errBuf += d.toString(); });
