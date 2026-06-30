@@ -843,7 +843,38 @@ const EDGE_VOICES = {
 const _ttsCache = new Map();
 const TTS_CACHE_MAX = 200;
 
+// ===== הגבלת מקביליות — edge-tts נכשל כשכמה תהליכים רצים בו-זמנית (אומת בלוגים: עובד לבד, נכשל בקבוצה) =====
+// תור פשוט שמריץ לכל היותר MAX_CONCURRENT_TTS תהליכי edge-tts במקביל; השאר ממתינים בתור
+const MAX_CONCURRENT_TTS = 2;
+let _ttsActiveCount = 0;
+const _ttsWaitQueue = [];
+
+function _ttsRunQueued(fn) {
+  return new Promise((resolve, reject) => {
+    const task = () => {
+      _ttsActiveCount++;
+      fn().then(
+        (res) => { _ttsActiveCount--; _ttsDrainQueue(); resolve(res); },
+        (err) => { _ttsActiveCount--; _ttsDrainQueue(); reject(err); }
+      );
+    };
+    if (_ttsActiveCount < MAX_CONCURRENT_TTS) task();
+    else _ttsWaitQueue.push(task);
+  });
+}
+
+function _ttsDrainQueue() {
+  while (_ttsActiveCount < MAX_CONCURRENT_TTS && _ttsWaitQueue.length) {
+    const next = _ttsWaitQueue.shift();
+    next();
+  }
+}
+
 function fetchTTSOnce(text, voiceKey, speed) {
+  return _ttsRunQueued(() => _fetchTTSOnceRaw(text, voiceKey, speed));
+}
+
+function _fetchTTSOnceRaw(text, voiceKey, speed) {
   return new Promise((resolve, reject) => {
     const profile = EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri'];
     const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`);
@@ -859,7 +890,7 @@ function fetchTTSOnce(text, voiceKey, speed) {
 
     execFile('edge-tts',
       ['--voice', profile.voice, '--rate', rateStr, '--pitch', profile.pitch, '--text', text, '--write-media', tmpFile],
-      { timeout: 6000 },
+      { timeout: 8000 },
       (err, stdout, stderr) => {
         if (err) {
           fs.unlink(tmpFile, () => {});
