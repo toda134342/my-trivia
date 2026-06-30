@@ -1391,6 +1391,14 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
   🔊 לחץ כאן להפעלת הקריין (אנדרואיד/מקרן)
 </div>
 
+<!-- כפתור צף — פתיחת מסך לוגים -->
+<button id="btn-open-logs" onclick="window.open('/logs/page', '_blank')" title="צפה בלוגים"
+  style="position:fixed;bottom:16px;right:16px;z-index:9996;width:46px;height:46px;border-radius:50%;
+    background:var(--s1,#1c2030);border:1px solid var(--border,#2a2e3a);color:var(--text,#e6e6e6);
+    font-size:1.2rem;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,0.3);display:flex;
+    align-items:center;justify-content:center;opacity:0.85;">📋</button>
+
+
 <!-- CUSTOM GAME MANAGER -->
 <div id="custom-game-overlay" style="display:none;position:fixed;inset:0;z-index:55;background:var(--bg);flex-direction:column;align-items:center;padding:20px;overflow-y:auto;">
   <div style="position:relative;z-index:1;width:100%;max-width:780px;">
@@ -1997,13 +2005,6 @@ function showCountdown(mode, onDone, introText) {
       }
       return;
     }
-    // Web Speech fallback
-    if (!synth) return;
-    synth.cancel();
-    const u = new SpeechSynthesisUtterance(word);
-    u.lang = 'he-IL'; u.rate = 1.1; u.pitch = 1.2;
-    applyVoice(u);
-    synth.speak(u);
   }
 
   function tick() {
@@ -2062,28 +2063,17 @@ function showCountdown(mode, onDone, introText) {
         };
 
         // נגן goWord ישירות עם Audio — לא דרך _ttsPlay
-        if (isEdgeVoice(selectedVoiceName)) {
-          const key = selectedVoiceName + '|' + EDGE_SPEED + '|' + goWord;
-          const cached = _edgeBlobCache.get(key);
-          const playGoAudio = (url) => {
-            if (!url) { doAfterGo(); return; }
-            const a = new Audio(url);
-            a.onended = doAfterGo;
-            a.onerror = doAfterGo;
-            a.play().catch(doAfterGo);
-          };
-          if (cached) { playGoAudio(cached); }
-          else { preloadEdge(goWord, selectedVoiceName, EDGE_SPEED).then(playGoAudio).catch(doAfterGo); }
-        } else {
-          // Web Speech
-          if (synth) {
-            synth.cancel();
-            const u = new SpeechSynthesisUtterance(goWord);
-            applyVoice(u); u.rate = 1.0;
-            u.onend = doAfterGo; u.onerror = doAfterGo;
-            synth.speak(u);
-          } else { doAfterGo(); }
-        }
+        const key = selectedVoiceName + '|' + EDGE_SPEED + '|' + goWord;
+        const cached = _edgeBlobCache.get(key);
+        const playGoAudio = (url) => {
+          if (!url) { doAfterGo(); return; }
+          const a = new Audio(url);
+          a.onended = doAfterGo;
+          a.onerror = doAfterGo;
+          a.play().catch(doAfterGo);
+        };
+        if (cached) { playGoAudio(cached); }
+        else { preloadEdge(goWord, selectedVoiceName, EDGE_SPEED).then(playGoAudio).catch(doAfterGo); }
       } else {
         setTimeout(() => {
           overlay.style.display = 'none';
@@ -3664,12 +3654,32 @@ function updateModeUI() {
 
 // ========== SSE ==========
 let es=null;
+let _esWasConnected = false;
 function connect(){
   if(es) es.close();
   es=new EventSource('/events');
+  es.onopen=()=>{
+    if (_esWasConnected && typeof serverLog === 'function') serverLog('🔌', 'חיבור SSE התחדש');
+    _esWasConnected = true;
+  };
   es.onmessage=e=>handle(JSON.parse(e.data));
-  es.onerror=()=>setTimeout(connect,3000);
+  es.onerror=()=>{
+    if (typeof serverLog === 'function') serverLog('⚠️', 'חיבור SSE נותק — מנסה שוב');
+    setTimeout(connect,3000);
+  };
 }
+
+// תיעוד שגיאות JS לא-מטופלות — כדי לראות תקיעות אמיתיות בלוג
+window.addEventListener('error', (e) => {
+  if (typeof serverLog === 'function') {
+    serverLog('💥', `שגיאת JS: ${e.message} (${e.filename||''}:${e.lineno||''})`);
+  }
+});
+window.addEventListener('unhandledrejection', (e) => {
+  if (typeof serverLog === 'function') {
+    serverLog('💥', `Promise נכשל: ${(e.reason && e.reason.message) || e.reason}`);
+  }
+});
 
 // Fallback polling: if game screen shows "ממתין" for pyramid/passnote, request resend
 setInterval(() => {
@@ -3979,7 +3989,7 @@ function handle(d){
     case 'paused':
       stopTimer();
       if(musicPlaying) stopMusic();
-      if(synth) synth.cancel(); // עצור קריין
+      if(typeof cancelAllSpeech === 'function') cancelAllSpeech(); // עצור קריין
       { const po=document.getElementById('pause-overlay'); if(po) po.style.display='flex'; }
       { const pb=document.getElementById('btn-pause-adm'); if(pb){pb.textContent='▶ המשך';pb.style.color='var(--green)';} }
       addFeed('⏸','המשחק הושהה');
@@ -4981,50 +4991,25 @@ function setFontSize(size) {
   saveSettingToServer('trivia_fs', size);
 }
 
-// ========== TTS ==========
+// ========== TTS — קולות פנימיים של המערכת (שרת), ללא תלות בדפדפן ==========
 let ttsOn = true;
-let selectedVoiceName = null; // null = auto
-const synth = window.speechSynthesis;
+let selectedVoiceName = localStorage.getItem('trivia_voice') || 'edge:avri'; // תמיד קול שרת — ברירת מחדל אברי
 let _ttsUnlocked = false;
 
-// Android/Chrome fix: unlock TTS on first user interaction
+// Unlock אודיו בדפדפנים שחוסמים ניגון אוטומטי לפני אינטראקציה ראשונה (לא קשור ל-Web Speech)
 function unlockTTS() {
   if (_ttsUnlocked) return;
   _ttsUnlocked = true;
-  // אם Edge נבחר — עצור synth ואל תגע בו
-  if (isEdgeVoice(selectedVoiceName)) {
-    if (synth) synth.cancel();
-    return;
-  }
-  if (!synth) return;
-  // Web Speech unlock — utter שקט
-  const u = new SpeechSynthesisUtterance(' ');
-  u.volume = 0; u.rate = 10; u.lang = 'he-IL';
-  synth.speak(u);
-  setTimeout(() => {
-    if (synth) {
-      const voices = synth.getVoices();
-      if (voices.length > 0) { availableVoices = voices; loadVoicesList(); }
-    }
-  }, 300);
+  // ניגון שקט קצר כדי "לפתוח" את ה-AudioContext/Audio בדפדפנים סלולריים
+  try {
+    const a = new Audio();
+    a.volume = 0;
+    a.play().catch(() => {});
+  } catch {}
 }
 document.addEventListener('click', unlockTTS, {once: false});
 document.addEventListener('touchstart', unlockTTS, {once: false});
-// מקרן אנדרואיד: גם pointerdown
 document.addEventListener('pointerdown', unlockTTS, {once: false});
-
-// Detect Android/Chrome and show audio banner
-(function() {
-  const ua = navigator.userAgent || '';
-  const isAndroid = /Android/i.test(ua);
-  const isChrome = /Chrome/i.test(ua);
-  if (isAndroid || isChrome) {
-    setTimeout(() => {
-      const banner = document.getElementById('android-audio-banner');
-      if (banner && !_ttsUnlocked) banner.style.display = 'block';
-    }, 1500);
-  }
-})();
 
 function unlockAudioBanner() {
   unlockTTS();
@@ -5033,159 +5018,45 @@ function unlockAudioBanner() {
   if (banner) { banner.textContent = '✅ שמע מופעל!'; setTimeout(() => banner.style.display='none', 1500); }
 }
 
-// Android Chrome bug: speechSynthesis pauses when tab loses focus — resume it
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && synth && synth.paused) synth.resume();
-});
+// ===== רשימת קולות (תמיד דרך השרת — נטענת מ-/tts-voices) =====
+let availableVoices = []; // {id,label} מהשרת
 
-// ===== ANDROID PROJECTOR FIX: touch-to-click polyfill =====
-// מקרני אנדרואיד ישנים לא מפעילים click מ-touchstart — זה מתקן את זה
-(function androidTouchFix() {
-  let _touchMoved = false;
-  document.addEventListener('touchstart', function(e) {
-    _touchMoved = false;
-  }, { passive: true, capture: true });
-  document.addEventListener('touchmove', function(e) {
-    _touchMoved = true;
-  }, { passive: true, capture: true });
-  document.addEventListener('touchend', function(e) {
-    if (_touchMoved) return;
-    const t = e.target;
-    if (!t) return;
-    // מצא את הכפתור/אלמנט הקליקבל הקרוב ביותר
-    const clickable = t.closest('button, [onclick], a, input, select, label, .btn, .chip, .cat-chip, .rb-cat-chip, .mode-card, .answer-btn, .player-card');
-    if (!clickable) return;
-    // אם ה-browser כבר שלח click — אל תכפיל
-    if (e.cancelable) e.preventDefault();
-    // שלח click סינתטי
-    const ce = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-    clickable.dispatchEvent(ce);
-  }, { capture: true });
-})();
-// Keep-alive ticker for Android (synth stops after ~15s on some devices)
-setInterval(() => {
-  if (ttsOn && synth && synth.speaking) synth.resume();
-}, 5000);
-
-
-
-// קולות זמינים — ימולאו לאחר טעינה
-let availableVoices = [];
-
-// זיהוי קול נשי לפי שם
-function isFemaleVoice(v) {
-  const n = (v.name || '').toLowerCase();
-  // Android Google voices: he-IL-language-sfg = Standard Female Google
-  if (n.includes('-sfg') || n.includes('_sfg') || n.includes('sfg-')) return true;
-  // Android: x-sfg in name
-  if (n.includes('x-sfg')) return true;
-  return n.includes('female') || n.includes('woman') || n.includes('girl') ||
-         n.includes('tami') || n.includes('carmit') || n.includes('sarah') ||
-         n.includes('tamar') || n.includes('dalia') || n.includes('shira') ||
-         n.includes('rachel') || n.includes('yael') || n.includes('miriam') ||
-         n.includes('rivka') || n.includes('leah');
-}
-
-function isMaleVoice(v) {
-  const n = (v.name || '').toLowerCase();
-  if (isFemaleVoice(v)) return false;
-  if (n.includes('male') || n.includes(' man') || n.includes('guy')) return true;
-  if (n.includes('asaf') || n.includes('yosef') || n.includes('moshe') ||
-      n.includes('aaron') || n.includes('david') || n.includes('daniel') ||
-      n.includes('rami') || n.includes('amit') || n.includes('eitan') ||
-      n.includes('ariel') || n.includes('noam') || n.includes('ilan') ||
-      n.includes('ben') || n.includes('uri') || n.includes('guy')) return true;
-  if (n.includes('hebrew') && n.includes('male')) return true;
-  // Android: קולות עבריים שאינם מזוהים כנשיים — נניח שהם גבריים
-  // (ב-Android הקול העברי הברירת מחדל הוא גברי)
-  const lang = (v.lang || '').toLowerCase();
-  if ((lang.startsWith('he') || lang.startsWith('iw')) && !isFemaleVoice(v)) return true;
-  return false;
-}
-
+let _voiceListFailCount = 0;
 function loadVoicesList() {
-  availableVoices = synth ? synth.getVoices() : [];
-  // Android: getVoices() may return empty on first call — retry
-  if (availableVoices.length === 0 && synth) {
-    setTimeout(loadVoicesList, 500);
-    return;
-  }
-  // קול שמור — רק edge: תקף (vp: ודפדפן ספציפי כבר לא בשימוש)
-  const saved = localStorage.getItem('trivia_voice') || '';
-  if (saved && saved.startsWith('edge:')) {
-    selectedVoiceName = saved;
-    window._selectedVoice = null;
+  fetch('/tts-voices').then(r => r.json()).then(list => {
+    _voiceListFailCount = 0;
+    availableVoices = Array.isArray(list) ? list : [];
+    // אם אין קול שמור תקף ברשימה — קח את הראשון
+    const valid = availableVoices.some(v => v.id === selectedVoiceName);
+    if (!valid && availableVoices.length) {
+      selectedVoiceName = availableVoices[0].id;
+      saveSettingToServer('trivia_voice', selectedVoiceName);
+    }
     if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
-    return;
-  }
-  // ברירת מחדל: אברי מהשרת
-  selectedVoiceName = 'edge:avri';
-  window._selectedVoice = null;
-  saveSettingToServer('trivia_voice', 'edge:avri');
-  if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
+    if (typeof renderVoiceList === 'function') renderVoiceList();
+  }).catch(() => {
+    // אם השרת לא הגיב — נשארים עם הקול השמור/ברירת מחדל, ננסה שוב בעוד קצת
+    _voiceListFailCount++;
+    if (_voiceListFailCount === 3 && typeof showToast === 'function') {
+      showToast('⚠️ לא ניתן להתחבר לשרת הקריינות — בודק שוב...');
+    }
+    setTimeout(loadVoicesList, 3000);
+  });
 }
 
 function setVoice(name) {
-  selectedVoiceName = name || null;
-  saveSettingToServer('trivia_voice', name || '');
-  if (synth) synth.cancel();
-  if (isEdgeVoice(name)) {
-    _ttsUnlocked = true;
-    return;
-  }
-  // ברירת מחדל דפדפן — ללא "שלום!" מיותר
+  selectedVoiceName = name || 'edge:avri';
+  saveSettingToServer('trivia_voice', selectedVoiceName);
+  cancelAllSpeech();
+  _ttsUnlocked = true;
 }
 
-function applyVoice(u) {
-  u.lang = 'he-IL';
-  u.rate  = typeof vpRate  !== 'undefined' ? vpRate  : 0.9;
-  u.pitch = typeof vpPitch !== 'undefined' ? vpPitch : 1.0;
-  // בחר קול עברי מהדפדפן אם יש
-  const voices  = synth ? synth.getVoices() : [];
-  const heVoice = voices.find(v => v.lang && (v.lang.startsWith('he') || v.lang.startsWith('iw')));
-  if (heVoice) { u.voice = heVoice; u.lang = heVoice.lang; }
+// כל הקולות כיום הם קולות שרת (edge:*) — אין יותר קול דפדפן
+function isEdgeVoice(name) {
+  return !!name;
 }
 
-// ========== EDGE TTS — קול מהשרת ==========
-let _edgeAudio = null; // AudioElement נוכחי של Edge
-const _edgeBlobCache = new Map(); // blob URL cache לניגון מיידי
-const EDGE_SPEED = 1.22; // מהירות דיבור — מהיר יותר מברירת מחדל
-
-// עצירת כל הדיבור — Edge + Web Speech
-
-// ===== פרופילי קול פנימיים (vp:) =====
-const VOICE_PROFILES = {
-  'vp:narrator-m': { label: '🎙️ קריין',     desc: 'קול קריין רציני וברור',      pitch: 0.85, rate: 0.88, gender: 'male'   },
-  'vp:narrator-f': { label: '🎙️ קריינית',   desc: 'קול קריינית חמה ונעימה',     pitch: 1.1,  rate: 0.90, gender: 'female' },
-  'vp:robot':      { label: '🤖 רובוט',      desc: 'קול רובוטי מתכתי',           pitch: 0.5,  rate: 1.10, gender: 'any'    },
-  'vp:child':      { label: '👦 ילד',         desc: 'קול ילדותי ועליז',           pitch: 1.7,  rate: 1.05, gender: 'any'    },
-  'vp:elder':      { label: '👴 זקן חכם',     desc: 'קול רגוע ואיטי',             pitch: 0.75, rate: 0.75, gender: 'male'   },
-  'vp:energetic':  { label: '⚡ אנרגטי',      desc: 'קול נלהב ומהיר',             pitch: 1.3,  rate: 1.18, gender: 'any'    },
-  'vp:whisper':    { label: '🤫 לחישה',       desc: 'קול נמוך ומסתורי',           pitch: 0.9,  rate: 0.80, gender: 'any'    },
-  'vp:giant':      { label: '👹 ענק',          desc: 'קול עמוק ומפחיד',            pitch: 0.4,  rate: 0.82, gender: 'male'   },
-};
-
-function getVoiceProfile(vpKey) {
-  return VOICE_PROFILES[vpKey] || null;
-}
-
-// מחזיר קול פיזי מתאים לפרופיל (male/female/any)
-function getPhysicalVoiceForProfile(prof) {
-  if (!synth) return null;
-  const voices = synth.getVoices();
-  const heVoices = voices.filter(v => v.lang && (v.lang.startsWith('he') || v.lang.startsWith('iw')));
-  const pool = heVoices.length > 0 ? heVoices : voices;
-  if (prof.gender === 'male')   return pool.find(isMaleVoice)         || pool[0] || null;
-  if (prof.gender === 'female') return pool.find(v => !isMaleVoice(v)) || pool[0] || null;
-  return pool[0] || null;
-}
-
-// בדיקה אם הקול הנוכחי הוא פרופיל פנימי
-function isVpVoice(name) {
-  return name && name.startsWith('vp:');
-}
-
-// ========== TTS ENGINE — מנגנון אחיד, ללא תחרויות ==========
+// ========== TTS ENGINE — מנגנון אחיד, ללא תחרויות, קול שרת בלבד ==========
 // רמות עדיפות: QUESTION (גבוהה) > PLAYER (בינונית) > LOW (נמוכה)
 // כל speak חדש ברמה שווה או גבוהה יותר — מבטל את הנוכחי
 
@@ -5238,13 +5109,8 @@ function cancelAllSpeech() {
     try { _edgeAudio.onended = null; _edgeAudio.onerror = null;
           _edgeAudio.pause(); _edgeAudio.currentTime = 0; _edgeAudio = null; } catch {}
   }
-  if (synth) synth.cancel();
   _ttsQueue = []; _ttsBusy = false;
   if (typeof hideNarratorDim === 'function') hideNarratorDim();
-}
-
-function isEdgeVoice(name) {
-  return name && name.startsWith('edge:');
 }
 
 function _ttsPlay(text, pri, onEnd) {
@@ -5277,72 +5143,71 @@ function _ttsPlay(text, pri, onEnd) {
     if (onEnd) onEnd();
   };
 
+  // fallback ארוך יותר כדי לתת לשרת מקום לנסות שוב (3 ניסיונות בצד שרת)
   _ttsFallback = setTimeout(() => {
     ttsLog(`_ttsPlay FALLBACK FIRED`, { seq, pri: priName, text: text.slice(0,40) });
     done();
-  }, 20000);
+  }, 25000);
 
-  if (isEdgeVoice(selectedVoiceName)) {
-    ttsLog(`_ttsPlay → Edge`, { voice: selectedVoiceName, cached: _edgeBlobCache.has(selectedVoiceName + '|' + EDGE_SPEED + '|' + text) });
-    _ttsPlayEdge(text, selectedVoiceName, done);
-  } else {
-    ttsLog(`_ttsPlay → WebSpeech`);
-    _ttsPlayWeb(text, done);
+  _ttsPlayServer(text, selectedVoiceName, done);
+}
+
+// התראה למשתמש כשה-TTS נכשל — מוגבלת בתדירות כדי לא להציף בטוסטים
+let _lastTtsErrorToast = 0;
+function notifyTtsFailure() {
+  if (typeof serverLog === 'function') serverLog('🔇', 'TTS נכשל — קול: ' + selectedVoiceName);
+  const now = Date.now();
+  if (now - _lastTtsErrorToast < 8000) return; // לא יותר מפעם ב-8 שניות
+  _lastTtsErrorToast = now;
+  if (typeof showToast === 'function') {
+    showToast('🔇 שירות הקריינות לא הגיב — ממשיכים בלי קול, מנסים שוב אוטומטית');
   }
 }
 
-function _ttsPlayEdge(text, voiceId, done) {
+function _ttsPlayServer(text, voiceId, done) {
   const spd = EDGE_SPEED;
   const key = voiceId + '|' + spd + '|' + text;
   const cached = _edgeBlobCache.has(key);
-  ttsLog(`_ttsPlayEdge`, { cached, text: text.slice(0,40) });
+  ttsLog(`_ttsPlayServer`, { cached, voiceId, text: text.slice(0,40) });
 
   const doPlay = (url) => {
     if (!ttsOn || window._ttsBlocked) {
-      ttsLog(`_ttsPlayEdge doPlay ABORTED — ttsOn=${ttsOn} blocked=${window._ttsBlocked}`);
+      ttsLog(`_ttsPlayServer doPlay ABORTED — ttsOn=${ttsOn} blocked=${window._ttsBlocked}`);
       done(); return;
     }
     const audio = new Audio(url);
-    audio.onended = () => { ttsLog('Edge audio.onended'); done(); };
-    audio.onerror = (e) => { ttsLog('Edge audio.onerror', e?.type); done(); };
+    audio.onended = () => { ttsLog('Server audio.onended'); done(); };
+    audio.onerror = (e) => { ttsLog('Server audio.onerror', e?.type); notifyTtsFailure(); done(); };
     _edgeAudio = audio;
     audio.play()
-      .then(() => ttsLog('Edge audio.play() OK'))
+      .then(() => ttsLog('Server audio.play() OK'))
       .catch(e => {
-        ttsLog('Edge audio.play() FAILED — falling back to WebSpeech', e?.message);
-        _ttsPlayWeb(text, done);
+        ttsLog('Server audio.play() FAILED', e?.message);
+        notifyTtsFailure();
+        done();
       });
   };
 
   if (cached) {
-    ttsLog('Edge: playing from cache');
+    ttsLog('Server: playing from cache');
     doPlay(_edgeBlobCache.get(key));
   } else {
-    ttsLog('Edge: fetching from server...');
+    ttsLog('Server: fetching TTS...');
     preloadEdge(text, voiceId, spd).then(url => {
-      if (!url) { ttsLog('Edge: fetch returned null → WebSpeech'); _ttsPlayWeb(text, done); return; }
-      ttsLog('Edge: fetch OK, playing');
+      if (!url) { ttsLog('Server: TTS fetch failed — no audio'); notifyTtsFailure(); done(); return; }
+      ttsLog('Server: fetch OK, playing');
       doPlay(url);
-    }).catch(e => { ttsLog('Edge: preloadEdge error', e?.message); _ttsPlayWeb(text, done); });
+    }).catch(e => { ttsLog('Server: preloadEdge error', e?.message); notifyTtsFailure(); done(); });
   }
 }
 
-function _ttsPlayWeb(text, done) {
-  ttsLog('_ttsPlayWeb', { hasSynth: !!synth, text: text.slice(0,40) });
-  if (!synth) { ttsLog('_ttsPlayWeb: no synth'); done(); return; }
-  const u = new SpeechSynthesisUtterance(text);
-  applyVoice(u);
-  u.rate  = typeof vpRate  !== 'undefined' ? vpRate  : 0.9;
-  u.pitch = typeof vpPitch !== 'undefined' ? vpPitch : 1.0;
-  u.onend  = () => { ttsLog('WebSpeech onend'); done(); };
-  u.onerror = (e) => { ttsLog('WebSpeech onerror', e?.error); done(); };
-  synth.speak(u);
-  ttsLog('WebSpeech.speak() called');
-}
+let _edgeAudio = null; // AudioElement נוכחי
+const _edgeBlobCache = new Map(); // blob URL cache לניגון מיידי
+const EDGE_SPEED = 1.0; // המהירות נשלטת כעת דרך הפרופיל הנבחר בשרת (ראה VOICE_OPTIONS)
 
 // preload — fetch → blob → שמור בcache → החזר Promise<blobUrl>
 function preloadEdge(text, voiceId, speed) {
-  if (!text || !isEdgeVoice(voiceId)) return Promise.resolve(null);
+  if (!text) return Promise.resolve(null);
   const spd = speed || EDGE_SPEED;
   const key = voiceId + '|' + spd + '|' + text.slice(0, 500);
   if (_edgeBlobCache.has(key)) return Promise.resolve(_edgeBlobCache.get(key));
@@ -5363,18 +5228,9 @@ function preloadEdge(text, voiceId, speed) {
     .catch(() => null);
 }
 
-// compat shim — ישן קוד שקורא לspeakEdge ישירות (countdown speakCdWord)
+// compat shim — קוד ישן שקורא ל-speakEdge ישירות (countdown speakCdWord)
 function speakEdge(text, voiceId, speed) {
   _ttsPlay(stripEmoji(text||''), TTS_PRI.LOW, null);
-}
-
-function speakWebSpeech(text, rate, pitch) {
-  // fallback פנימי — משמש רק מ-_ttsPlayEdge כשplay נכשל
-  if (!synth || !text || !ttsOn) return;
-  const u = new SpeechSynthesisUtterance(text);
-  applyVoice(u);
-  if (rate) u.rate = rate; if (pitch) u.pitch = pitch;
-  synth.speak(u);
 }
 
 // speak() — קריאה כללית (הכרזות, קטגוריות, welcome) — לא דורסת ספירה
@@ -5470,11 +5326,8 @@ function speakWelcome() {
   _ttsPlay(text, TTS_PRI.LOW, null);
 }
 
-// טען קולות ראשוני
-if (window.speechSynthesis) {
-  speechSynthesis.onvoiceschanged = () => { loadVoicesList(); };
-  setTimeout(loadVoicesList, 300);
-}
+// טען קולות ראשוני — מהשרת בלבד
+loadVoicesList();
 
 
 
@@ -6499,6 +6352,25 @@ function saveSettingToServer(key, value) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   }).catch(() => {});
+}
+
+// ===== לוג מאוחד — שולח אירועים משמעותיים מהדפדפן לשרת, כדי שהכל יתועד במקום אחד =====
+// (לא כל קריאת ttsLog — רק אירועים שמעניינים: שגיאות, חיבורים, אירועי משחק חשובים)
+let _serverLogQueue = [];
+let _serverLogBusy = false;
+function serverLog(emoji, msg) {
+  _serverLogQueue.push({ emoji, msg, room: (typeof gwRoomId !== 'undefined' ? gwRoomId : null) });
+  if (!_serverLogBusy) _flushServerLog();
+}
+function _flushServerLog() {
+  if (!_serverLogQueue.length) { _serverLogBusy = false; return; }
+  _serverLogBusy = true;
+  const item = _serverLogQueue.shift();
+  fetch('/client-log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(item)
+  }).catch(() => {}).finally(() => setTimeout(_flushServerLog, 50));
 }
 
 // טוען הגדרות מהשרת ומחיל אותן — קורה פעם אחת בטעינת הדף
@@ -7630,15 +7502,17 @@ function maybeAddHotseatBanner(d) {
 </div>
 
 <script>
-// ===== VOICE PANEL — פשוט: 3 קולות בלבד =====
-// אברי (גבר), הילה (אישה) — דרך השרת (Neural, עקבי בכל מחשב)
-// ברירת מחדל דפדפן — כגיבוי אם השרת לא זמין
-
-const VOICE_OPTIONS = [
-  { id: 'edge:avri', label: '👨 אברי',  desc: 'גבר עברי — Neural מהשרת' },
-  { id: 'edge:hila', label: '👩 הילה',  desc: 'אישה עברית — Neural מהשרת' },
-  { id: 'browser',   label: '🌐 ברירת מחדל', desc: 'קול הדפדפן המקומי — גיבוי' },
-];
+// ===== VOICE PANEL — קולות פנימיים של המערכת (שרת בלבד, ללא תלות בדפדפן) =====
+// הרשימה בפועל נטענת דינמית מ-/tts-voices (ראה availableVoices ב-loadVoicesList).
+// VOICE_LABELS משמש כתיאור נוסף לכל מזהה קול (תיאור קצר לכפתור).
+const VOICE_LABELS = {
+  'edge:avri':           { label: '👨 אברי — קריין רגיל',     desc: 'גבר עברי — Neural מהשרת' },
+  'edge:avri-deep':      { label: '🎙️ אברי — קריין עמוק',     desc: 'גבר עברי, קול עמוק — Neural מהשרת' },
+  'edge:avri-fast':      { label: '⚡ אברי — קריין מהיר',      desc: 'גבר עברי, קצב מהיר — Neural מהשרת' },
+  'edge:hila':           { label: '👩 הילה — קריינית רגילה',  desc: 'אישה עברית — Neural מהשרת' },
+  'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',    desc: 'אישה עברית, קול חם — Neural מהשרת' },
+  'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', desc: 'אישה עברית, קצב מהיר — Neural מהשרת' },
+};
 
 let vpPendingVoice = null;
 let vpRate  = parseFloat(localStorage.getItem('trivia_voice_rate')  || '1');
@@ -7649,6 +7523,8 @@ function openVoicePanel() {
   renderVoiceList();
   document.getElementById('voice-panel-overlay').style.display = 'block';
   document.getElementById('voice-panel').style.display = 'block';
+  // רענן את הרשימה מהשרת בכל פתיחה — מבטיח עדכניות
+  loadVoicesList();
 }
 
 function closeVoicePanel() {
@@ -7658,8 +7534,8 @@ function closeVoicePanel() {
 }
 
 function confirmVoicePanel() {
-  if (vpPendingVoice !== null && vpPendingVoice !== undefined) {
-    setVoice(vpPendingVoice === 'browser' ? null : vpPendingVoice);
+  if (vpPendingVoice) {
+    setVoice(vpPendingVoice);
   }
   updateVoiceLabel();
   closeVoicePanel();
@@ -7682,27 +7558,23 @@ function selectVoiceFromPanel(id, btn) {
 function testPendingVoice(id) {
   unlockTTS();
   const sampleText = 'שלום! זהו הקול שנבחר למשחק.';
-  if (id === 'browser') {
-    if (!synth) return;
-    const u = new SpeechSynthesisUtterance(sampleText);
-    u.lang = 'he-IL'; u.rate = 0.9;
-    synth.cancel(); synth.speak(u);
-    return;
-  }
-  // Edge — קול מהשרת
   const params = new URLSearchParams({ text: sampleText, voice: id });
   const audio = new Audio('/tts?' + params);
-  audio.play().catch(() => speakEdge(sampleText, id));
+  audio.play().catch(() => {
+    ttsLog('testPendingVoice play failed', id);
+  });
 }
 
 function renderVoiceList() {
   const list = document.getElementById('vp-voice-list');
   if (!list) return;
-  // קבע מה נבחר כרגע
-  const current = vpPendingVoice !== null ? vpPendingVoice
-    : (selectedVoiceName ? selectedVoiceName : 'browser');
-  list.innerHTML = VOICE_OPTIONS.map(v => {
-    const isSel = current === v.id || (v.id === 'browser' && !current);
+  const current = vpPendingVoice || selectedVoiceName;
+  // השתמש ברשימה מהשרת אם נטענה, אחרת בברירת המחדל המקומית
+  const options = (availableVoices && availableVoices.length)
+    ? availableVoices.map(v => ({ id: v.id, label: (VOICE_LABELS[v.id]||{}).label || v.label, desc: (VOICE_LABELS[v.id]||{}).desc || '' }))
+    : Object.entries(VOICE_LABELS).map(([id, v]) => ({ id, label: v.label, desc: v.desc }));
+  list.innerHTML = options.map(v => {
+    const isSel = current === v.id;
     return `<div style="display:flex;gap:8px;align-items:center;">
       <button class="vp-voice-btn" onclick="selectVoiceFromPanel('${v.id}', this)"
         style="flex:1;padding:14px 16px;border-radius:12px;
@@ -7723,9 +7595,8 @@ function renderVoiceList() {
 function updateVoiceLabel() {
   const btn = document.getElementById('btn-voice');
   if (!btn) return;
-  if (!selectedVoiceName) { btn.textContent = '🔊 דפדפן'; return; }
-  const names = { 'edge:avri': 'אברי', 'edge:hila': 'הילה' };
-  btn.textContent = '🔊 ' + (names[selectedVoiceName] || selectedVoiceName.split(' ')[0].slice(0,10));
+  const meta = VOICE_LABELS[selectedVoiceName];
+  btn.textContent = '🔊 ' + (meta ? meta.label.replace(/^[^\s]+\s/, '') : (selectedVoiceName || 'אברי'));
 }
 
 function updateVoiceRate(val)  { vpRate  = parseFloat(val); saveSettingToServer('trivia_voice_rate',  String(vpRate));  }
