@@ -54,6 +54,31 @@ function saveRooms(rooms) {
   } catch(e) { log('⚠️', 'שגיאה בשמירת חדרים: ' + e.message); }
 }
 
+// ===== הגדרות גלובליות — קול, ערכת נושא, וכו' — מקור אמת יחיד לכל המחשבים =====
+// כל שינוי שנשמר כאן זמין מיידית לכל מחשב/דפדפן שמתחבר לשרת, כי הוא נטען מכאן ולא מ-localStorage המקומי
+const SETTINGS_FILE = '/app/data/settings.json';
+let appSettings = {};
+
+function loadAppSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      appSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+      return;
+    }
+  } catch (e) { log('⚠️', 'שגיאה בטעינת הגדרות: ' + e.message); }
+  appSettings = {};
+}
+
+function saveAppSettings() {
+  try {
+    const dir = path.dirname(SETTINGS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(appSettings, null, 2));
+  } catch (e) { log('⚠️', 'שגיאה בשמירת הגדרות: ' + e.message); }
+}
+
+loadAppSettings();
+
 let players = {};
 let playerNames = {};
 let currentQuestion = 0;
@@ -921,6 +946,26 @@ app.post('/tts-preload', async (req, res) => {
 
 app.get('/tts-voices', (req, res) => {
   res.json(Object.entries(EDGE_VOICES).map(([id, v]) => ({ id, label: v.label })));
+});
+
+// ===== הגדרות גלובליות (קול, ערכת נושא, וכו') — אותו מקור לכל המחשבים =====
+app.get('/settings', (req, res) => {
+  res.json(appSettings);
+});
+
+app.post('/settings', (req, res) => {
+  const body = req.body || {};
+  let changed = false;
+  Object.keys(body).forEach(k => {
+    if (appSettings[k] !== body[k]) { appSettings[k] = body[k]; changed = true; }
+  });
+  if (changed) {
+    saveAppSettings();
+    // דחיפה מיידית לכל המחשבים המחוברים — לא מחכים לרענון דף
+    broadcast({ type: 'settings-changed', settings: body });
+    log('⚙️', `הגדרות עודכנו: ${Object.keys(body).join(', ')}`);
+  }
+  res.json({ ok: true, settings: appSettings });
 });
 
 // ===== מערכת לוגים — צפייה ושליחה =====
