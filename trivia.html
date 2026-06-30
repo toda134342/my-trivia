@@ -2073,7 +2073,15 @@ function showCountdown(mode, onDone, introText) {
           a.play().catch(doAfterGo);
         };
         if (cached) { playGoAudio(cached); }
-        else { preloadEdge(goWord, selectedVoiceName, EDGE_SPEED).then(playGoAudio).catch(doAfterGo); }
+        else {
+          let goFired = false;
+          const safeDoAfterGo = () => { if (!goFired) { goFired = true; doAfterGo(); } };
+          // אם השרת לוקח יותר מדי זמן (כמו במצב כשל ממושך) — ממשיכים בלי לחכות
+          setTimeout(safeDoAfterGo, 3000);
+          preloadEdge(goWord, selectedVoiceName, EDGE_SPEED)
+            .then(url => { if (!goFired) { goFired = true; playGoAudio(url); } })
+            .catch(safeDoAfterGo);
+        }
       } else {
         setTimeout(() => {
           overlay.style.display = 'none';
@@ -5149,11 +5157,12 @@ function _ttsPlay(text, pri, onEnd) {
     if (onEnd) onEnd();
   };
 
-  // fallback ארוך יותר כדי לתת לשרת מקום לנסות שוב (3 ניסיונות בצד שרת)
+  // fallback קצר — אם השרת לא ענה תוך זמן סביר, ממשיכים מיד למשחק במקום לתקוע את המסך
+  // (גם עם 3 ניסיונות בצד שרת, כל ניסיון הוא עד ~12 שניות; חיכינו פעם ל-25 שניות וזה היה נראה כאילו המשחק תקוע)
   _ttsFallback = setTimeout(() => {
     ttsLog(`_ttsPlay FALLBACK FIRED`, { seq, pri: priName, text: text.slice(0,40) });
     done();
-  }, 25000);
+  }, 6000);
 
   _ttsPlayServer(text, selectedVoiceName, done);
 }
@@ -5304,13 +5313,21 @@ function speakQuestionThenStart(question, answers, timeLimit) {
 
   if (!fullText.trim()) { startTimer(tl); return; }
 
-  showNarratorDim();
+  // המשחק תמיד מתחיל מיידית — הקריין הוא תוספת קולית בלבד, לעולם לא חוסם את המסך.
+  // אם הקול מצליח להתחיל לנגן תוך זמן קצר, מציגים dim עדין; אם לא — פשוט ממשיכים בלי.
+  startTimer(tl);
+
+  let dimShown = false;
+  const dimTimer = setTimeout(() => {
+    // רק אם השמע באמת התחיל לנגן (לא רק "ניסינו") נציג dim — אחרת זה ירגיש כאילו המסך קפא
+    if (_edgeAudio && !_edgeAudio.paused) { showNarratorDim(); dimShown = true; }
+  }, 600);
 
   const onDone = () => {
-    ttsLog('speakQuestionThenStart → onDone → hideNarratorDim + startTimer', { tl });
+    ttsLog('speakQuestionThenStart → onDone → hideNarratorDim', { tl });
     _ttsNarratorDone = null;
-    hideNarratorDim();
-    startTimer(tl);
+    clearTimeout(dimTimer);
+    if (dimShown) hideNarratorDim();
   };
   _ttsNarratorDone = onDone;
 
