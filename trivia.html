@@ -3696,6 +3696,12 @@ setInterval(() => {
 
 function handle(d){
   switch(d.type){
+    case 'settings-changed':
+      // עדכון חי מהשרת — הגדרה שונתה במחשב אחר, מוחל כאן מיידית בלי רענון דף
+      applySettings(d.settings);
+      if (typeof showToast === 'function') showToast('🔄 הגדרות עודכנו ממחשב אחר');
+      break;
+
     case 'init':
       players={};d.players.forEach(p=>players[p.callId]=p);
       gameState=d.gameState;gameMode=d.gameMode||'classic';
@@ -6342,11 +6348,11 @@ const SETTINGS_KEYS = ['trivia_theme','trivia_fs','trivia_voice','trivia_voice_r
   'trivia_voice_tab','trivia_tts','trivia_narrator_v2','applauseSettings','mixedCats',
   'trivia_custom_cats','trivia_cd_length','trivia_presets'];
 
-// שמור הגדרה אחת לשרת (ולשמור גם ב-localStorage כגיבוי מקומי)
+// שמור הגדרה אחת לשרת — השרת הוא מקור האמת היחיד; localStorage משמש רק כגיבוי במצב לא מקוון
 function saveSettingToServer(key, value) {
-  try { localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value)); } catch {}
-  const body = {};
-  body[key] = typeof value === 'string' ? value : JSON.stringify(value);
+  const strVal = typeof value === 'string' ? value : JSON.stringify(value);
+  try { localStorage.setItem(key, strVal); } catch {} // גיבוי מקומי בלבד, לא נקרא בעדיפות
+  const body = {}; body[key] = strVal;
   fetch('/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -6373,46 +6379,53 @@ function _flushServerLog() {
   }).catch(() => {}).finally(() => setTimeout(_flushServerLog, 50));
 }
 
-// טוען הגדרות מהשרת ומחיל אותן — קורה פעם אחת בטעינת הדף
+// מחיל הגדרות שהגיעו מהשרת על המשתנים בפועל בזיכרון — קרוא הן בטעינה הראשונית והן בעדכון חי (SSE)
+// זה התיקון המרכזי: בעבר selectedVoiceName/ttsOn/vpRate נקבעו פעם אחת מ-localStorage בזמן טעינת הסקריפט
+// ולא התעדכנו יותר גם כשהגיעו ערכים מהשרת — מה שגרם למחשב אחד "לא לקבל" שינוי שנעשה במחשב אחר.
+function applySettings(s) {
+  if (!s) return;
+  if (s['trivia_theme'] !== undefined) setTheme(s['trivia_theme'] || '');
+  if (s['trivia_fs']    !== undefined) setFontSize(s['trivia_fs'] || 'md');
+
+  if (s['trivia_tts'] !== undefined) {
+    ttsOn = s['trivia_tts'] === '1';
+    const btn = document.getElementById('btn-tts');
+    if (btn) {
+      btn.textContent = ttsOn ? 'פעיל 🔈' : 'כבוי';
+      btn.style.color = ttsOn ? 'var(--green)' : '';
+      btn.style.borderColor = ttsOn ? 'var(--green)' : '';
+    }
+    if (typeof rbSyncTTS === 'function') rbSyncTTS();
+  }
+
+  if (s['trivia_voice']) {
+    selectedVoiceName = s['trivia_voice'];
+    try { localStorage.setItem('trivia_voice', selectedVoiceName); } catch {}
+    if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
+    if (typeof renderVoiceList === 'function') renderVoiceList();
+  }
+  if (s['trivia_voice_rate'])  { vpRate  = parseFloat(s['trivia_voice_rate'])  || 1; try { localStorage.setItem('trivia_voice_rate',  String(vpRate));  } catch {} }
+  if (s['trivia_voice_pitch']) { vpPitch = parseFloat(s['trivia_voice_pitch']) || 1; try { localStorage.setItem('trivia_voice_pitch', String(vpPitch)); } catch {} }
+  if (s['trivia_voice_tab'])   { vpTab   = s['trivia_voice_tab'];  try { localStorage.setItem('trivia_voice_tab', vpTab); } catch {} }
+  if (s['trivia_narrator_v2']) { try { localStorage.setItem('trivia_narrator_v2', s['trivia_narrator_v2']); } catch {} }
+  if (s['applauseSettings'])   { try { applauseSettings = JSON.parse(s['applauseSettings']); localStorage.setItem('applauseSettings', s['applauseSettings']); } catch {} }
+  if (s['mixedCats'])          { try { localStorage.setItem('mixedCats', s['mixedCats']); } catch {} }
+  if (s['trivia_custom_cats']) { try { localStorage.setItem('trivia_custom_cats', s['trivia_custom_cats']); } catch {} }
+  if (s['trivia_cd_length'])   { try { localStorage.setItem('trivia_cd_length', s['trivia_cd_length']); } catch {} }
+  if (s['trivia_presets'])     { try { localStorage.setItem('trivia_presets', s['trivia_presets']); if (typeof renderPresets === 'function') renderPresets(); } catch {} }
+}
+
+// טוען הגדרות מהשרת ומחיל אותן — קורה פעם אחת בטעינת הדף.
+// השרת הוא מקור האמת: אם הוא זמין, הערכים שלו תמיד גוברים על מה שהיה שמור מקומית בדפדפן הזה.
 async function loadSettingsFromServer() {
   try {
     const res = await fetch('/settings');
     if (!res.ok) throw new Error('server error');
     const serverSettings = await res.json();
+    applySettings(serverSettings);
 
-    // מזג: שרת גובר על localStorage
-    const merged = {};
-    SETTINGS_KEYS.forEach(k => {
-      const local = localStorage.getItem(k);
-      const srv   = serverSettings[k];
-      merged[k] = srv !== undefined ? srv : (local || null);
-    });
-
-    // החל הגדרות
-    const theme = merged['trivia_theme'] || '';
-    if (theme) setTheme(theme);
-    const fs = merged['trivia_fs'] || 'md';
-    setFontSize(fs);
-
-    if (merged['trivia_tts'] === '1') {
-      ttsOn = true;
-      const btn = document.getElementById('btn-tts');
-      if (btn) { btn.textContent = 'פעיל 🔈'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; }
-      if (typeof rbSyncTTS === 'function') rbSyncTTS();
-    }
-
-    if (merged['trivia_voice'])       { try { localStorage.setItem('trivia_voice', merged['trivia_voice']); } catch {} }
-    if (merged['trivia_voice_rate'])  { vpRate  = parseFloat(merged['trivia_voice_rate'])  || 1; try { localStorage.setItem('trivia_voice_rate',  String(vpRate));  } catch {} }
-    if (merged['trivia_voice_pitch']) { vpPitch = parseFloat(merged['trivia_voice_pitch']) || 1; try { localStorage.setItem('trivia_voice_pitch', String(vpPitch)); } catch {} }
-    if (merged['trivia_voice_tab'])   { vpTab   = merged['trivia_voice_tab'];  try { localStorage.setItem('trivia_voice_tab', vpTab); } catch {} }
-    if (merged['trivia_narrator_v2']) { try { localStorage.setItem('trivia_narrator_v2', merged['trivia_narrator_v2']); } catch {} }
-    if (merged['applauseSettings'])   { try { applauseSettings = JSON.parse(merged['applauseSettings']); localStorage.setItem('applauseSettings', merged['applauseSettings']); } catch {} }
-    if (merged['mixedCats'])          { try { localStorage.setItem('mixedCats', merged['mixedCats']); } catch {} }
-    if (merged['trivia_custom_cats']) { try { localStorage.setItem('trivia_custom_cats', merged['trivia_custom_cats']); } catch {} }
-    if (merged['trivia_cd_length'])   { try { localStorage.setItem('trivia_cd_length', merged['trivia_cd_length']); } catch {} }
-    if (merged['trivia_presets'])     { try { localStorage.setItem('trivia_presets', merged['trivia_presets']); if (typeof renderPresets === 'function') renderPresets(); } catch {} }
-
-    // סנכרן הגדרות מקומיות חסרות לשרת (גיבוי כיוון הפוך)
+    // העלה לשרת רק מפתחות שעדיין לא קיימים שם בכלל (פעם ראשונה/מעבר ממכשיר ישן) —
+    // לא דורס ערך שרת קיים בערך מקומי ישן
     const toSync = {};
     SETTINGS_KEYS.forEach(k => {
       if (serverSettings[k] === undefined) {
@@ -6425,7 +6438,8 @@ async function loadSettingsFromServer() {
     }
 
   } catch (e) {
-    // fallback: קרא מ-localStorage כרגיל
+    // השרת לא זמין כרגע — fallback זמני בלבד למה שהיה שמור מקומית, עד שהחיבור יחזור
+    if (typeof serverLog === 'function') serverLog('⚠️', 'לא ניתן לטעון הגדרות מהשרת — שימוש זמני בעותק מקומי');
     setTheme(localStorage.getItem('trivia_theme') || '');
     setFontSize(localStorage.getItem('trivia_fs') || 'md');
     if (localStorage.getItem('trivia_tts') === '1') {
