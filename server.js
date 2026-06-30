@@ -69,9 +69,63 @@ let pausedTimeLeft = 0;
 let pauseStartTime = 0;
 let questionTimeLeft = 22;
 
-function log(emoji, msg) {
-  console.log(`[${new Date().toISOString().slice(11,23)}] ${emoji} ${msg}`);
+// ===== מערכת לוגים מתועדת — זיכרון + קובץ קבוע ב-/app/data =====
+const LOGS_DIR  = '/app/data/logs';
+const LOG_FILE  = path.join(LOGS_DIR, 'app.log');
+const LOG_RING_MAX = 2000;          // כמה שורות שומרים בזיכרון להצגה מהירה
+const LOG_FILE_MAX_BYTES = 5 * 1024 * 1024; // 5MB — אחרי זה מתחילים קובץ חדש
+let logRing = []; // {t, emoji, msg, src}
+
+function ensureLogsDir() {
+  try { if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true }); } catch {}
 }
+
+function rotateLogFileIfNeeded() {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return;
+    const stat = fs.statSync(LOG_FILE);
+    if (stat.size > LOG_FILE_MAX_BYTES) {
+      const archived = path.join(LOGS_DIR, `app-${Date.now()}.log`);
+      fs.renameSync(LOG_FILE, archived);
+    }
+  } catch {}
+}
+
+function appendLogToFile(line) {
+  try {
+    ensureLogsDir();
+    rotateLogFileIfNeeded();
+    fs.appendFileSync(LOG_FILE, line + '\n');
+  } catch {} // לוגים לא אמורים להפיל את השרת
+}
+
+function log(emoji, msg, src) {
+  const t = new Date();
+  const timeStr = t.toISOString().slice(11, 23);
+  const line = `[${timeStr}] ${emoji} ${msg}`;
+  console.log(line);
+
+  const entry = { t: t.toISOString(), emoji, msg, src: src || 'server' };
+  logRing.push(entry);
+  if (logRing.length > LOG_RING_MAX) logRing.shift();
+  appendLogToFile(`[${t.toISOString()}] [${entry.src}] ${emoji} ${msg}`);
+}
+
+// טעינת היסטוריית לוגים אחרונה מהקובץ הקבוע אל תוך הזיכרון בעת עליית השרת
+function loadRecentLogsFromFile() {
+  try {
+    ensureLogsDir();
+    if (!fs.existsSync(LOG_FILE)) return;
+    const content = fs.readFileSync(LOG_FILE, 'utf8');
+    const lines = content.split('\n').filter(Boolean).slice(-LOG_RING_MAX);
+    logRing = lines.map(line => {
+      const m = line.match(/^\[([^\]]+)\]\s*\[([^\]]+)\]\s*(\S+)\s*(.*)$/);
+      if (m) return { t: m[1], src: m[2], emoji: m[3], msg: m[4] };
+      return { t: new Date().toISOString(), src: 'server', emoji: '📝', msg: line };
+    });
+  } catch {}
+}
+loadRecentLogsFromFile();
 
 function loadNames() {
   try {
@@ -752,37 +806,41 @@ const { execFile } = require('child_process');
 const os = require('os');
 
 const EDGE_VOICES = {
-  'edge:avri': { voice: 'he-IL-AvriNeural', label: '👨 אברי — גבר עברי'   },
-  'edge:hila': { voice: 'he-IL-HilaNeural', label: '👩 הילה — אישה עברית' },
+  'edge:avri':           { voice: 'he-IL-AvriNeural', label: '👨 אברי — קריין רגיל',      rate: '+15%', pitch: '+0Hz'  },
+  'edge:avri-deep':      { voice: 'he-IL-AvriNeural', label: '🎙️ אברי — קריין עמוק',      rate: '+5%',  pitch: '-15Hz' },
+  'edge:avri-fast':      { voice: 'he-IL-AvriNeural', label: '⚡ אברי — קריין מהיר',       rate: '+35%', pitch: '+5Hz'  },
+  'edge:hila':           { voice: 'he-IL-HilaNeural', label: '👩 הילה — קריינית רגילה',   rate: '+15%', pitch: '+0Hz'  },
+  'edge:hila-warm':      { voice: 'he-IL-HilaNeural', label: '🎙️ הילה — קריינית חמה',     rate: '+5%',  pitch: '-5Hz'  },
+  'edge:hila-energetic': { voice: 'he-IL-HilaNeural', label: '⚡ הילה — קריינית אנרגטית',  rate: '+35%', pitch: '+10Hz' },
 };
 
 // Cache in-memory — מונע עיכוב בטקסטים חוזרים
 const _ttsCache = new Map();
-const TTS_CACHE_MAX = 100;
+const TTS_CACHE_MAX = 200;
 
-function fetchTTS(text, voiceKey, speed = 1.15) {
+function fetchTTSOnce(text, voiceKey, speed) {
   return new Promise((resolve, reject) => {
-    const voice = (EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri']).voice;
-    const cacheKey = voiceKey + '|' + speed + '|' + text;
-    if (_ttsCache.has(cacheKey)) return resolve(_ttsCache.get(cacheKey));
-
-    // edge-tts כותב לקובץ זמני ואז אנחנו קוראים אותו
+    const profile = EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri'];
     const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`);
 
-    // rate שולט במהירות ב-edge-tts (אחוז יחסי ל-0)
-    const ratePercent = Math.round((speed - 1) * 100);
-    const rateStr = (ratePercent >= 0 ? '+' : '') + ratePercent + '%';
+    // speed (1.0 = רגיל) משולב עם ה-rate הבסיסי של הפרופיל
+    let rateStr = profile.rate;
+    if (speed && speed !== 1.0) {
+      const baseRate = parseInt(profile.rate, 10) || 0;
+      const extra = Math.round((speed - 1) * 100);
+      const total = baseRate + extra;
+      rateStr = (total >= 0 ? '+' : '') + total + '%';
+    }
 
     execFile('edge-tts',
-      ['--voice', voice, '--rate', rateStr, '--text', text, '--write-media', tmpFile],
-      { timeout: 15000 },
+      ['--voice', profile.voice, '--rate', rateStr, '--pitch', profile.pitch, '--text', text, '--write-media', tmpFile],
+      { timeout: 12000 },
       (err) => {
-        if (err) return reject(new Error('edge-tts נכשל: ' + err.message));
+        if (err) { fs.unlink(tmpFile, () => {}); return reject(new Error('edge-tts נכשל: ' + err.message)); }
         fs.readFile(tmpFile, (readErr, data) => {
           fs.unlink(tmpFile, () => {}); // ניקוי קובץ זמני
           if (readErr) return reject(readErr);
-          if (_ttsCache.size >= TTS_CACHE_MAX) _ttsCache.delete(_ttsCache.keys().next().value);
-          _ttsCache.set(cacheKey, data);
+          if (!data || data.length === 0) return reject(new Error('edge-tts החזיר קובץ ריק'));
           resolve(data);
         });
       }
@@ -790,10 +848,32 @@ function fetchTTS(text, voiceKey, speed = 1.15) {
   });
 }
 
+// קריאה לשרת ה-TTS הפנימי, עם ניסיון חוזר אוטומטי אם הניסיון הראשון נכשל
+// (לרוב נכשל בגלל timeout רגעי מול שרתי מיקרוסופט — לא צריך ליפול לדפדפן, פשוט לנסות שוב)
+async function fetchTTS(text, voiceKey, speed = 1.0) {
+  const cacheKey = voiceKey + '|' + speed + '|' + text;
+  if (_ttsCache.has(cacheKey)) return _ttsCache.get(cacheKey);
+
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const data = await fetchTTSOnce(text, voiceKey, speed);
+      if (_ttsCache.size >= TTS_CACHE_MAX) _ttsCache.delete(_ttsCache.keys().next().value);
+      _ttsCache.set(cacheKey, data);
+      return data;
+    } catch (err) {
+      lastErr = err;
+      log('⚠️', `Edge TTS ניסיון ${attempt}/3 נכשל: ${err.message}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw lastErr;
+}
+
 app.get('/tts', async (req, res) => {
   const text  = (req.query.text || '').slice(0, 500).trim();
   const key   = req.query.voice || 'edge:avri';
-  const speed = Math.min(2.0, Math.max(0.5, parseFloat(req.query.speed) || 1.15));
+  const speed = Math.min(2.0, Math.max(0.5, parseFloat(req.query.speed) || 1.0));
   if (!text) return res.status(400).send('missing text');
   try {
     const buffer = await fetchTTS(text, key, speed);
@@ -801,8 +881,8 @@ app.get('/tts', async (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.end(buffer);
   } catch (err) {
-    log('⚠️', 'Edge TTS נכשל: ' + err.message);
-    res.status(503).json({ error: 'Edge TTS לא זמין' });
+    log('⚠️', 'Edge TTS נכשל סופית: ' + err.message);
+    res.status(503).json({ error: 'שירות הקריינות לא זמין כרגע, נסה שוב' });
   }
 });
 
@@ -811,12 +891,170 @@ app.post('/tts-preload', async (req, res) => {
   const { text, voice, speed } = req.body || {};
   if (!text) return res.status(400).send('missing text');
   res.status(202).send('ok');
-  const spd = Math.min(2.0, Math.max(0.5, parseFloat(speed) || 1.15));
+  const spd = Math.min(2.0, Math.max(0.5, parseFloat(speed) || 1.0));
   try { await fetchTTS(text.slice(0,500), voice||'edge:avri', spd); } catch {}
 });
 
 app.get('/tts-voices', (req, res) => {
   res.json(Object.entries(EDGE_VOICES).map(([id, v]) => ({ id, label: v.label })));
+});
+
+// ===== מערכת לוגים — צפייה ושליחה =====
+
+// קבלת לוגים מהלקוח (דפדפן) — מאחד הכל למקום אחד
+app.post('/client-log', (req, res) => {
+  try {
+    const { emoji, msg, room, player } = req.body || {};
+    if (!msg) return res.status(400).json({ ok: false });
+    const tag = [room ? `room:${room}` : null, player ? `player:${player}` : null].filter(Boolean).join(' ');
+    log(emoji || '📱', tag ? `${tag} — ${msg}` : msg, 'client');
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// קבלת לוג API — JSON, לשימוש תכנותי / רענון אוטומטי במסך הלוגים
+app.get('/logs', (req, res) => {
+  const limit = Math.min(2000, Math.max(1, parseInt(req.query.limit) || 300));
+  const src = req.query.src; // 'server' | 'client' | undefined=הכל
+  let items = logRing;
+  if (src) items = items.filter(e => e.src === src);
+  res.json({ ok: true, count: items.length, logs: items.slice(-limit) });
+});
+
+// ניקוי לוגים (רק מנהל)
+app.post('/logs/clear', (req, res) => {
+  const { key } = req.body || {};
+  if (key !== MASTER_KEY) return res.status(403).json({ ok: false, error: 'גישה אסורה' });
+  logRing = [];
+  try { ensureLogsDir(); fs.writeFileSync(LOG_FILE, ''); } catch {}
+  log('🗑️', 'הלוגים נוקו ע"י מנהל');
+  res.json({ ok: true });
+});
+
+// מסך לוגים — HTML, נגיש דרך כפתור בממשק
+app.get('/logs/page', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>לוגים — Trivia</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, 'Segoe UI', Arial, sans-serif; background:#0f1117; color:#e6e6e6; margin:0; padding:0; }
+  header { position:sticky; top:0; background:#161922; padding:12px 16px; border-bottom:1px solid #2a2e3a; display:flex; gap:8px; align-items:center; flex-wrap:wrap; z-index:10; }
+  header h1 { font-size:1rem; margin:0; flex:1; }
+  button, select, input[type=text] { font-family:inherit; font-size:0.85rem; padding:8px 12px; border-radius:8px; border:1px solid #2a2e3a; background:#1c2030; color:#e6e6e6; cursor:pointer; }
+  button:hover { background:#262b3d; }
+  button.active { background:#3a5fff; border-color:#3a5fff; }
+  #logs { padding:8px 16px 40px; max-width:1100px; margin:0 auto; }
+  .row { display:flex; gap:10px; padding:6px 8px; border-bottom:1px solid #1c2030; font-size:0.82rem; line-height:1.5; }
+  .row:hover { background:#161922; }
+  .row.src-client { border-right:3px solid #3a5fff; }
+  .row.src-server { border-right:3px solid #2ecc71; }
+  .time { color:#888; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .src-badge { font-size:0.7rem; padding:1px 6px; border-radius:6px; background:#262b3d; color:#aaa; white-space:nowrap; height:fit-content; }
+  .msg { flex:1; word-break:break-word; }
+  .empty { text-align:center; color:#777; padding:40px; }
+  #toolbar2 { display:flex; gap:8px; padding:10px 16px; flex-wrap:wrap; align-items:center; background:#13151c; border-bottom:1px solid #2a2e3a;}
+  #toolbar2 input[type=text] { flex:1; min-width:160px; }
+  .count { color:#888; font-size:0.8rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📋 לוגים — Trivia</h1>
+  <button id="btn-auto" class="active" onclick="toggleAuto()">🔄 רענון אוטומטי</button>
+  <button onclick="loadLogs()">↻ רענן עכשיו</button>
+  <button onclick="downloadLogs()">⬇ הורד קובץ</button>
+  <button onclick="clearLogs()" style="border-color:#c0392b;color:#ff8a80;">🗑️ נקה לוגים</button>
+</header>
+<div id="toolbar2">
+  <button id="f-all" class="active" onclick="setFilter(null)">הכל</button>
+  <button id="f-server" onclick="setFilter('server')">שרת</button>
+  <button id="f-client" onclick="setFilter('client')">דפדפן</button>
+  <input type="text" id="search" placeholder="חיפוש בטקסט..." oninput="render()">
+  <span class="count" id="count"></span>
+</div>
+<div id="logs"><div class="empty">טוען...</div></div>
+<script>
+let allLogs = [];
+let filterSrc = null;
+let autoOn = true;
+let timer = null;
+
+function setFilter(src) {
+  filterSrc = src;
+  document.querySelectorAll('#toolbar2 button').forEach(b => b.classList.remove('active'));
+  document.getElementById(src ? 'f-'+src : 'f-all').classList.add('active');
+  render();
+}
+
+function toggleAuto() {
+  autoOn = !autoOn;
+  const btn = document.getElementById('btn-auto');
+  btn.classList.toggle('active', autoOn);
+  if (autoOn) startAuto(); else stopAuto();
+}
+function startAuto() { stopAuto(); timer = setInterval(loadLogs, 2500); }
+function stopAuto() { if (timer) clearInterval(timer); timer = null; }
+
+function loadLogs() {
+  fetch('/logs?limit=1000').then(r => r.json()).then(d => {
+    allLogs = d.logs || [];
+    render();
+  }).catch(() => {});
+}
+
+function render() {
+  const q = (document.getElementById('search').value || '').toLowerCase();
+  let items = allLogs;
+  if (filterSrc) items = items.filter(e => e.src === filterSrc);
+  if (q) items = items.filter(e => (e.msg||'').toLowerCase().includes(q));
+  const el = document.getElementById('logs');
+  document.getElementById('count').textContent = items.length + ' שורות';
+  if (!items.length) { el.innerHTML = '<div class="empty">אין לוגים תואמים</div>'; return; }
+  el.innerHTML = items.slice().reverse().map(e => {
+    const time = (e.t || '').replace('T',' ').replace('Z','').slice(0,23);
+    return '<div class="row src-'+(e.src||'server')+'">' +
+      '<span class="time">'+time+'</span>' +
+      '<span class="src-badge">'+(e.src==='client'?'דפדפן':'שרת')+'</span>' +
+      '<span class="msg">'+ (e.emoji||'') +' '+ escapeHtml(e.msg||'') +'</span>' +
+    '</div>';
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function downloadLogs() {
+  const lines = allLogs.map(e => '['+e.t+'] ['+(e.src||'server')+'] '+(e.emoji||'')+' '+(e.msg||''));
+  const blob = new Blob([lines.join('\\n')], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'trivia-logs-' + new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.txt';
+  a.click();
+}
+
+function clearLogs() {
+  const key = prompt('סיסמת מנהל לניקוי הלוגים:');
+  if (!key) return;
+  fetch('/logs/clear', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ key }) })
+    .then(r => r.json()).then(d => {
+      if (d.ok) { allLogs = []; render(); }
+      else alert(d.error || 'שגיאה');
+    });
+}
+
+loadLogs();
+startAuto();
+</script>
+</body>
+</html>`);
 });
 
 // ===== GATEWAY ROUTES =====
