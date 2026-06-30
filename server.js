@@ -848,9 +848,25 @@ async function ensurePiperVoice() {
 
   const download = (url, dest) => new Promise((resolve, reject) => {
     log('⬇️', `Piper: מוריד ${url.split('/').pop()}...`);
-    const proc = spawn('curl', ['-sL', '--max-time', '120', '-o', dest, url], { timeout: 130000 });
-    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`curl נכשל קוד ${code}`)));
-    proc.on('error', reject);
+    const https = require('https');
+    const file  = fs.createWriteStream(dest);
+    const req = https.get(url, { timeout: 120000 }, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        file.close();
+        fs.unlink(dest, () => {});
+        return download(res.headers.location, dest).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        file.close();
+        fs.unlink(dest, () => {});
+        return reject(new Error(`HTTP ${res.statusCode} עבור ${url}`));
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+      file.on('error', (e) => { fs.unlink(dest, () => {}); reject(e); });
+    });
+    req.on('error', (e) => { fs.unlink(dest, () => {}); reject(e); });
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
   });
 
   try {
