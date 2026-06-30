@@ -1,43 +1,28 @@
-# Dockerfile — Node.js + Piper TTS (מקומי לחלוטין, ללא תלות באינטרנט)
+# Dockerfile — Node.js + piper-tts via pip
+# המודל העברי מוריד אוטומטית בעלייה הראשונה ונשמר ב-volume
 FROM node:20-slim
 
-# כלי בסיס + wget להורדת Piper
 RUN apt-get update && apt-get install -y \
-    wget \
+    python3 \
+    python3-pip \
+    python3-venv \
     ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# ========== Piper TTS — התקנה מקומית ==========
-# מזהה ארכיטקטורה אוטומטית (amd64 / arm64)
-RUN set -e; \
-    ARCH=$(dpkg --print-architecture); \
-    if [ "$ARCH" = "amd64" ]; then PIPER_ARCH="x86_64"; else PIPER_ARCH="aarch64"; fi; \
-    echo "Installing Piper for $PIPER_ARCH"; \
-    wget -q "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_${PIPER_ARCH}.tar.gz" \
-         -O /tmp/piper.tar.gz; \
-    mkdir -p /opt/piper; \
-    tar -xzf /tmp/piper.tar.gz -C /opt/piper; \
-    mv /opt/piper/piper/piper /usr/local/bin/piper; \
-    mv /opt/piper/piper/espeak-ng-data /usr/local/lib/espeak-ng-data; \
-    rm -rf /tmp/piper.tar.gz /opt/piper; \
-    chmod +x /usr/local/bin/piper
+# התקנת piper-tts (pip package — כולל binary + ספריות ONNX)
+RUN python3 -m venv /opt/piper-env \
+    && /opt/piper-env/bin/pip install --no-cache-dir piper-tts
 
-# ========== מודל עברית (Piper — he_IL) ==========
-RUN mkdir -p /opt/piper-voices && \
-    wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/main/he/he_IL/local/high/he_IL-local-high.onnx" \
-         -O /opt/piper-voices/he_IL.onnx && \
-    wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/main/he/he_IL/local/high/he_IL-local-high.onnx.json" \
-         -O /opt/piper-voices/he_IL.onnx.json
+ENV PATH="/opt/piper-env/bin:$PATH"
+ENV PIPER_VOICE_DIR="/app/data/piper-voices"
 
 WORKDIR /app
-
 COPY server.js .
 COPY trivia.html .
 COPY questions.json .
 
 RUN npm init -y && npm install express yemot-router2
-
 RUN mkdir -p /app/data
 VOLUME /app/data
 

@@ -823,16 +823,44 @@ app.get('/', (req, res) => {
   else res.status(404).send('not found');
 });
 
-// ===== EDGE TTS — קולות Neural מ-Microsoft (חינמי, ללא API key) =====
-// ========== Piper TTS — מנוע קול מקומי לחלוטין, ללא תלות באינטרנט ==========
-// כל הסינתזה רצה על הדיסק המקומי — אין קריאות ענן, אין rate limits, אין כשלי רשת.
-// קול ברירת מחדל: he_IL-local-high (עברית)
+// ========== Piper TTS — מנוע קול מקומי ==========
+// piper-tts pip package. מודל עברי מוריד אוטומטית בעלייה ראשונה, נשמר ב-volume.
 
 const { execFile, spawn } = require('child_process');
 const os = require('os');
 
-const PIPER_BIN   = '/usr/local/bin/piper';
-const PIPER_MODEL = '/opt/piper-voices/he_IL.onnx';
+const PIPER_BIN  = '/opt/piper-env/bin/piper';
+const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
+const VOICE_NAME = 'he_IL-local-high';
+let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
+
+// הורדת המודל בעלייה (אם עוד לא קיים)
+async function ensurePiperVoice() {
+  const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
+  if (fs.existsSync(onnxPath)) {
+    log('✅', `Piper: מודל קיים: ${onnxPath}`);
+    PIPER_MODEL = onnxPath;
+    return;
+  }
+  log('⬇️', `Piper: מוריד מודל עברית "${VOICE_NAME}"...`);
+  fs.mkdirSync(VOICE_DIR, { recursive: true });
+  return new Promise((resolve) => {
+    const dl = spawn('/opt/piper-env/bin/python3', [
+      '-m', 'piper.download', '--directory', VOICE_DIR, VOICE_NAME
+    ], { timeout: 120000 });
+    dl.stderr.on('data', d => process.stderr.write(d));
+    dl.stdout.on('data', d => process.stdout.write(d));
+    dl.on('close', (code) => {
+      if (code === 0 && fs.existsSync(onnxPath)) {
+        log('✅', `Piper: מודל הורד → ${onnxPath}`);
+        PIPER_MODEL = onnxPath;
+      } else {
+        log('🔇', `Piper: הורדת מודל נכשלה (קוד ${code})`);
+      }
+      resolve();
+    });
+  });
+}
 
 // ===== פרופילי קולות גבריים =====
 // Piper עצמו מייצר קול אחד, אנחנו נותנים "אישיות" שונה דרך עיבוד Sox (rate/pitch/reverb).
@@ -897,7 +925,7 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
       '--length_scale', String(Math.round((1.0 / finalRate) * 100) / 100),  // length_scale הפוך מ-rate
     ];
 
-    const proc = spawn(PIPER_BIN, piperArgs, { timeout: 12000 });
+    const proc = spawn(PIPER_BIN, piperArgs, { timeout: 15000, env: { ...process.env, ESPEAK_DATA_PATH: '/opt/piper-env/lib/python3.11/site-packages/piper_phonemize/espeak-ng-data' } });
 
     let errBuf = '';
     proc.stderr.on('data', d => { errBuf += d.toString(); });
@@ -1504,23 +1532,15 @@ app.delete('/room-data/:roomId/contacts/:phone', checkRoomAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   log('🚀', `שרת רץ על פורט ${PORT}`);
   loadNames();
-  // בדיקת אבחון חד-פעמית בעת עליית השרת — האם Piper TTS זמין ועובד
-  execFile(PIPER_BIN, ['--version'], { timeout: 5000 }, (err, stdout, stderr) => {
-    if (err) {
-      log('🔇', `בדיקת Piper TTS בעלייה: נכשל — ${(stderr||err.message||'').trim().slice(0,200)}`);
-    } else {
-      log('✅', `בדיקת Piper TTS בעלייה: זמין (${(stdout||stderr||'').trim().slice(0,80)})`);
-      // בדיקת ניסיון אמיתי — משפט קצר בעברית
-      fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(buf => {
-        log('✅', `בדיקת Piper TTS: ניגון לדוגמה הצליח (${buf.length} בתים)`);
-      }).catch(e => {
-        log('🔇', `בדיקת Piper TTS: ניגון לדוגמה נכשל — ${e.message.slice(0,300)}`);
-
-      });
-    }
+  // הורדת מודל Piper בפעם הראשונה (אם לא קיים) + בדיקת תקינות
+  await ensurePiperVoice();
+  fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(buf => {
+    log('✅', `Piper TTS: ניגון לדוגמה הצליח (${buf.length} בתים)`);
+  }).catch(e => {
+    log('🔇', `Piper TTS: ניגון לדוגמה נכשל — ${e.message.slice(0,300)}`);
   });
 });
 
