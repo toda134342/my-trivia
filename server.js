@@ -859,7 +859,7 @@ function fetchTTSOnce(text, voiceKey, speed) {
 
     execFile('edge-tts',
       ['--voice', profile.voice, '--rate', rateStr, '--pitch', profile.pitch, '--text', text, '--write-media', tmpFile],
-      { timeout: 12000 },
+      { timeout: 6000 },
       (err, stdout, stderr) => {
         if (err) {
           fs.unlink(tmpFile, () => {});
