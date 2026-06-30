@@ -835,8 +835,12 @@ function fetchTTSOnce(text, voiceKey, speed) {
     execFile('edge-tts',
       ['--voice', profile.voice, '--rate', rateStr, '--pitch', profile.pitch, '--text', text, '--write-media', tmpFile],
       { timeout: 12000 },
-      (err) => {
-        if (err) { fs.unlink(tmpFile, () => {}); return reject(new Error('edge-tts נכשל: ' + err.message)); }
+      (err, stdout, stderr) => {
+        if (err) {
+          fs.unlink(tmpFile, () => {});
+          const detail = (stderr && stderr.trim()) || (stdout && stdout.trim()) || err.message;
+          return reject(new Error('edge-tts נכשל: ' + detail));
+        }
         fs.readFile(tmpFile, (readErr, data) => {
           fs.unlink(tmpFile, () => {}); // ניקוי קובץ זמני
           if (readErr) return reject(readErr);
@@ -850,6 +854,26 @@ function fetchTTSOnce(text, voiceKey, speed) {
 
 // קריאה לשרת ה-TTS הפנימי, עם ניסיון חוזר אוטומטי אם הניסיון הראשון נכשל
 // (לרוב נכשל בגלל timeout רגעי מול שרתי מיקרוסופט — לא צריך ליפול לדפדפן, פשוט לנסות שוב)
+let _lastTtsErrSignature = null;
+let _lastTtsErrTime = 0;
+let _ttsErrSuppressedCount = 0;
+function logTtsError(emoji, fullMsg) {
+  // חתימה ללא מספר ניסיון/טקסט ספציפי — רק הקול והשגיאה עצמה, כדי לזהות כשלים זהים חוזרים
+  const sig = fullMsg.replace(/ניסיון \d\/3/, 'ניסיון X').replace(/"[^"]*"/, '"..."').slice(0, 150);
+  const now = Date.now();
+  if (sig === _lastTtsErrSignature && (now - _lastTtsErrTime) < 10000) {
+    _ttsErrSuppressedCount++;
+    return;
+  }
+  if (_ttsErrSuppressedCount > 0) {
+    log('🔁', `(הושתקו ${_ttsErrSuppressedCount} שגיאות TTS זהות נוספות)`);
+  }
+  _ttsErrSuppressedCount = 0;
+  _lastTtsErrSignature = sig;
+  _lastTtsErrTime = now;
+  log(emoji, fullMsg);
+}
+
 async function fetchTTS(text, voiceKey, speed = 1.0) {
   const cacheKey = voiceKey + '|' + speed + '|' + text;
   if (_ttsCache.has(cacheKey)) return _ttsCache.get(cacheKey);
@@ -863,7 +887,7 @@ async function fetchTTS(text, voiceKey, speed = 1.0) {
       return data;
     } catch (err) {
       lastErr = err;
-      log('⚠️', `Edge TTS ניסיון ${attempt}/3 נכשל: ${err.message}`);
+      logTtsError('⚠️', `Edge TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
       if (attempt < 3) await new Promise(r => setTimeout(r, 400 * attempt));
     }
   }
@@ -881,7 +905,7 @@ app.get('/tts', async (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.end(buffer);
   } catch (err) {
-    log('⚠️', 'Edge TTS נכשל סופית: ' + err.message);
+    logTtsError('🛑', `Edge TTS נכשל סופית [${key}] "${text.slice(0,30)}": ${err.message}`);
     res.status(503).json({ error: 'שירות הקריינות לא זמין כרגע, נסה שוב' });
   }
 });
@@ -1387,7 +1411,24 @@ app.delete('/room-data/:roomId/contacts/:phone', checkRoomAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => { log('🚀', `שרת רץ על פורט ${PORT}`); loadNames(); });
+app.listen(PORT, () => {
+  log('🚀', `שרת רץ על פורט ${PORT}`);
+  loadNames();
+  // בדיקת אבחון חד-פעמית בעת עליית השרת — האם edge-tts בכלל זמין ועובד
+  execFile('edge-tts', ['--version'], { timeout: 8000 }, (err, stdout, stderr) => {
+    if (err) {
+      log('🔇', `בדיקת edge-tts בעלייה: נכשל לחלוטין — ${(stderr||err.message||'').trim().slice(0,200)}`);
+    } else {
+      log('✅', `בדיקת edge-tts בעלייה: זמין (${(stdout||'').trim().slice(0,80)})`);
+      // בדיקת ניסיון אמיתי — משפט קצר בעברית, כדי לוודא שגם הקריאה לשרתי מיקרוסופט עובדת
+      fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(buf => {
+        log('✅', `בדיקת edge-tts: ניגון לדוגמה הצליח (${buf.length} בתים)`);
+      }).catch(e => {
+        log('🔇', `בדיקת edge-tts: ניגון לדוגמה נכשל — ${e.message.slice(0,300)}`);
+      });
+    }
+  });
+});
 
 // ===== NON-TRIVIA GAMES =====
 
