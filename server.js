@@ -824,27 +824,37 @@ app.get('/', (req, res) => {
 });
 
 // ===== EDGE TTS — קולות Neural מ-Microsoft (חינמי, ללא API key) =====
-// משתמש ב-edge-tts Python CLI ישירות — מותקן בתוך הקונטיינר
-// קולות עבריים: he-IL-AvriNeural (גבר), he-IL-HilaNeural (אישה)
+// ========== Piper TTS — מנוע קול מקומי לחלוטין, ללא תלות באינטרנט ==========
+// כל הסינתזה רצה על הדיסק המקומי — אין קריאות ענן, אין rate limits, אין כשלי רשת.
+// קול ברירת מחדל: he_IL-local-high (עברית)
 
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const os = require('os');
 
+const PIPER_BIN   = '/usr/local/bin/piper';
+const PIPER_MODEL = '/opt/piper-voices/he_IL.onnx';
+
+// ===== פרופילי קולות גבריים =====
+// Piper עצמו מייצר קול אחד, אנחנו נותנים "אישיות" שונה דרך עיבוד Sox (rate/pitch/reverb).
+// כל הקולות גבריים ותוססים כפי שביקשת.
 const EDGE_VOICES = {
-  'edge:avri':           { voice: 'he-IL-AvriNeural', label: '👨 אברי — קריין רגיל',      rate: '+15%', pitch: '+0Hz'  },
-  'edge:avri-deep':      { voice: 'he-IL-AvriNeural', label: '🎙️ אברי — קריין עמוק',      rate: '+5%',  pitch: '-15Hz' },
-  'edge:avri-fast':      { voice: 'he-IL-AvriNeural', label: '⚡ אברי — קריין מהיר',       rate: '+35%', pitch: '+5Hz'  },
-  'edge:hila':           { voice: 'he-IL-HilaNeural', label: '👩 הילה — קריינית רגילה',   rate: '+15%', pitch: '+0Hz'  },
-  'edge:hila-warm':      { voice: 'he-IL-HilaNeural', label: '🎙️ הילה — קריינית חמה',     rate: '+5%',  pitch: '-5Hz'  },
-  'edge:hila-energetic': { voice: 'he-IL-HilaNeural', label: '⚡ הילה — קריינית אנרגטית',  rate: '+35%', pitch: '+10Hz' },
+  // --- גבריים ---
+  'edge:avri':        { label: '👨 אברי — קריין רגיל',       rate: 1.0,  pitch: 0   },
+  'edge:avri-deep':   { label: '🎤 ד"ר — קריין עמוק ונמוך',  rate: 0.92, pitch: -3  },
+  'edge:avri-fast':   { label: '⚡ ספרינטר — קריין מהיר',    rate: 1.25, pitch: 1   },
+  'edge:avri-warm':   { label: '🎙️ חבר — קריין חם ונעים',    rate: 0.97, pitch: -1  },
+  // --- נשיים (נשמרים לתאימות לאחור אם מישהו בחר אותם בעבר) ---
+  'edge:hila':           { label: '👩 הילה — קריינית רגילה',   rate: 1.0,  pitch: 3   },
+  'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',    rate: 0.95, pitch: 2   },
+  'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', rate: 1.2,  pitch: 4   },
 };
 
 // Cache in-memory — מונע עיכוב בטקסטים חוזרים
 const _ttsCache = new Map();
 const TTS_CACHE_MAX = 200;
 
-// ===== הגבלת מקביליות — edge-tts נכשל כשכמה תהליכים רצים בו-זמנית (אומת בלוגים: עובד לבד, נכשל בקבוצה) =====
-// תור פשוט שמריץ לכל היותר MAX_CONCURRENT_TTS תהליכי edge-tts במקביל; השאר ממתינים בתור
+// ===== הגבלת מקביליות — Piper מאוד יעיל אבל נגביל ל-2 תהליכים מקבילים כדי לא להעמיס את ה-CPU =====
+// תור פשוט שמריץ לכל היותר MAX_CONCURRENT_TTS תהליכי Piper במקביל; השאר ממתינים בתור
 const MAX_CONCURRENT_TTS = 2;
 let _ttsActiveCount = 0;
 const _ttsWaitQueue = [];
@@ -877,34 +887,41 @@ function fetchTTSOnce(text, voiceKey, speed) {
 function _fetchTTSOnceRaw(text, voiceKey, speed) {
   return new Promise((resolve, reject) => {
     const profile = EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri'];
-    const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`);
+    const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.wav`);
 
-    // speed (1.0 = רגיל) משולב עם ה-rate הבסיסי של הפרופיל
-    let rateStr = profile.rate;
-    if (speed && speed !== 1.0) {
-      const baseRate = parseInt(profile.rate, 10) || 0;
-      const extra = Math.round((speed - 1) * 100);
-      const total = baseRate + extra;
-      rateStr = (total >= 0 ? '+' : '') + total + '%';
-    }
+    // Piper מקבל טקסט מ-stdin ומייצר WAV לקובץ
+    const finalRate = (profile.rate || 1.0) * (speed || 1.0);
+    const piperArgs = [
+      '--model', PIPER_MODEL,
+      '--output_file', tmpFile,
+      '--length_scale', String(Math.round((1.0 / finalRate) * 100) / 100),  // length_scale הפוך מ-rate
+    ];
 
-    execFile('edge-tts',
-      ['--voice', profile.voice, '--rate', rateStr, '--pitch', profile.pitch, '--text', text, '--write-media', tmpFile],
-      { timeout: 8000 },
-      (err, stdout, stderr) => {
-        if (err) {
-          fs.unlink(tmpFile, () => {});
-          const detail = (stderr && stderr.trim()) || (stdout && stdout.trim()) || err.message;
-          return reject(new Error('edge-tts נכשל: ' + detail));
-        }
-        fs.readFile(tmpFile, (readErr, data) => {
-          fs.unlink(tmpFile, () => {}); // ניקוי קובץ זמני
-          if (readErr) return reject(readErr);
-          if (!data || data.length === 0) return reject(new Error('edge-tts החזיר קובץ ריק'));
-          resolve(data);
-        });
+    const proc = spawn(PIPER_BIN, piperArgs, { timeout: 12000 });
+
+    let errBuf = '';
+    proc.stderr.on('data', d => { errBuf += d.toString(); });
+
+    proc.stdin.write(text);
+    proc.stdin.end();
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        fs.unlink(tmpFile, () => {});
+        return reject(new Error(`Piper נכשל (קוד ${code}): ${errBuf.trim().slice(0, 200)}`));
       }
-    );
+      fs.readFile(tmpFile, (readErr, data) => {
+        fs.unlink(tmpFile, () => {});
+        if (readErr) return reject(readErr);
+        if (!data || data.length === 0) return reject(new Error('Piper החזיר קובץ ריק'));
+        resolve(data);
+      });
+    });
+
+    proc.on('error', (err) => {
+      fs.unlink(tmpFile, () => {});
+      reject(new Error(`Piper שגיאת תהליך: ${err.message}`));
+    });
   });
 }
 
@@ -943,7 +960,7 @@ async function fetchTTS(text, voiceKey, speed = 1.0) {
       return data;
     } catch (err) {
       lastErr = err;
-      logTtsError('⚠️', `Edge TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
+      logTtsError('⚠️', `Piper TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
       if (attempt < 3) await new Promise(r => setTimeout(r, 400 * attempt));
     }
   }
@@ -957,11 +974,11 @@ app.get('/tts', async (req, res) => {
   if (!text) return res.status(400).send('missing text');
   try {
     const buffer = await fetchTTS(text, key, speed);
-    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Type', 'audio/wav');
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.end(buffer);
   } catch (err) {
-    logTtsError('🛑', `Edge TTS נכשל סופית [${key}] "${text.slice(0,30)}": ${err.message}`);
+    logTtsError('🛑', `Piper TTS נכשל סופית [${key}] "${text.slice(0,30)}": ${err.message}`);
     res.status(503).json({ error: 'שירות הקריינות לא זמין כרגע, נסה שוב' });
   }
 });
@@ -1490,17 +1507,18 @@ app.delete('/room-data/:roomId/contacts/:phone', checkRoomAuth, (req, res) => {
 app.listen(PORT, () => {
   log('🚀', `שרת רץ על פורט ${PORT}`);
   loadNames();
-  // בדיקת אבחון חד-פעמית בעת עליית השרת — האם edge-tts בכלל זמין ועובד
-  execFile('edge-tts', ['--version'], { timeout: 8000 }, (err, stdout, stderr) => {
+  // בדיקת אבחון חד-פעמית בעת עליית השרת — האם Piper TTS זמין ועובד
+  execFile(PIPER_BIN, ['--version'], { timeout: 5000 }, (err, stdout, stderr) => {
     if (err) {
-      log('🔇', `בדיקת edge-tts בעלייה: נכשל לחלוטין — ${(stderr||err.message||'').trim().slice(0,200)}`);
+      log('🔇', `בדיקת Piper TTS בעלייה: נכשל — ${(stderr||err.message||'').trim().slice(0,200)}`);
     } else {
-      log('✅', `בדיקת edge-tts בעלייה: זמין (${(stdout||'').trim().slice(0,80)})`);
-      // בדיקת ניסיון אמיתי — משפט קצר בעברית, כדי לוודא שגם הקריאה לשרתי מיקרוסופט עובדת
+      log('✅', `בדיקת Piper TTS בעלייה: זמין (${(stdout||stderr||'').trim().slice(0,80)})`);
+      // בדיקת ניסיון אמיתי — משפט קצר בעברית
       fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(buf => {
-        log('✅', `בדיקת edge-tts: ניגון לדוגמה הצליח (${buf.length} בתים)`);
+        log('✅', `בדיקת Piper TTS: ניגון לדוגמה הצליח (${buf.length} בתים)`);
       }).catch(e => {
-        log('🔇', `בדיקת edge-tts: ניגון לדוגמה נכשל — ${e.message.slice(0,300)}`);
+        log('🔇', `בדיקת Piper TTS: ניגון לדוגמה נכשל — ${e.message.slice(0,300)}`);
+
       });
     }
   });

@@ -5313,21 +5313,21 @@ function speakQuestionThenStart(question, answers, timeLimit) {
 
   if (!fullText.trim()) { startTimer(tl); return; }
 
-  // המשחק תמיד מתחיל מיידית — הקריין הוא תוספת קולית בלבד, לעולם לא חוסם את המסך.
-  // אם הקול מצליח להתחיל לנגן תוך זמן קצר, מציגים dim עדין; אם לא — פשוט ממשיכים בלי.
-  startTimer(tl);
-
+  // יש קריין פעיל — הטיימר לא מתחיל עד שהקריין מסיים לדבר (onEnd/done).
+  // מציגים dim ("הקשיבו לשאלה...") מיד עם תחילת הניגון, ומתחילים את הטיימר רק כשהוא מסתיים.
   let dimShown = false;
   const dimTimer = setTimeout(() => {
     // רק אם השמע באמת התחיל לנגן (לא רק "ניסינו") נציג dim — אחרת זה ירגיש כאילו המסך קפא
     if (_edgeAudio && !_edgeAudio.paused) { showNarratorDim(); dimShown = true; }
   }, 600);
 
+  let timerStarted = false;
   const onDone = () => {
-    ttsLog('speakQuestionThenStart → onDone → hideNarratorDim', { tl });
+    ttsLog('speakQuestionThenStart → onDone → startTimer + hideNarratorDim', { tl });
     _ttsNarratorDone = null;
     clearTimeout(dimTimer);
     if (dimShown) hideNarratorDim();
+    if (!timerStarted) { timerStarted = true; startTimer(tl); }
   };
   _ttsNarratorDone = onDone;
 

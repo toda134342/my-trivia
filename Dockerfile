@@ -1,38 +1,45 @@
-# Dockerfile יחיד ל-Render.com — Node.js + Python + edge-tts הכל ביחד
+# Dockerfile — Node.js + Piper TTS (מקומי לחלוטין, ללא תלות באינטרנט)
 FROM node:20-slim
 
-# התקנת Python ו-pip
+# כלי בסיס + wget להורדת Piper
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
+    wget \
     ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# התקנת edge-tts דרך Python (venv כדי לעקוף "externally managed environment")
-RUN python3 -m venv /opt/edge-tts-env \
-    && /opt/edge-tts-env/bin/pip install --no-cache-dir edge-tts
+# ========== Piper TTS — התקנה מקומית ==========
+# מזהה ארכיטקטורה אוטומטית (amd64 / arm64)
+RUN set -e; \
+    ARCH=$(dpkg --print-architecture); \
+    if [ "$ARCH" = "amd64" ]; then PIPER_ARCH="x86_64"; else PIPER_ARCH="aarch64"; fi; \
+    echo "Installing Piper for $PIPER_ARCH"; \
+    wget -q "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_${PIPER_ARCH}.tar.gz" \
+         -O /tmp/piper.tar.gz; \
+    mkdir -p /opt/piper; \
+    tar -xzf /tmp/piper.tar.gz -C /opt/piper; \
+    mv /opt/piper/piper/piper /usr/local/bin/piper; \
+    mv /opt/piper/piper/espeak-ng-data /usr/local/lib/espeak-ng-data; \
+    rm -rf /tmp/piper.tar.gz /opt/piper; \
+    chmod +x /usr/local/bin/piper
 
-# הוספת edge-tts ל-PATH
-ENV PATH="/opt/edge-tts-env/bin:$PATH"
+# ========== מודל עברית (Piper — he_IL) ==========
+RUN mkdir -p /opt/piper-voices && \
+    wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/main/he/he_IL/local/high/he_IL-local-high.onnx" \
+         -O /opt/piper-voices/he_IL.onnx && \
+    wget -q "https://huggingface.co/rhasspy/piper-voices/resolve/main/he/he_IL/local/high/he_IL-local-high.onnx.json" \
+         -O /opt/piper-voices/he_IL.onnx.json
 
-# הגדרת תיקיית עבודה
 WORKDIR /app
 
-# העתקת קבצי הפרויקט
 COPY server.js .
 COPY trivia.html .
 COPY questions.json .
 
-# התקנת תלויות Node.js
 RUN npm init -y && npm install express yemot-router2
 
-# יצירת תיקיית data
 RUN mkdir -p /app/data
-
 VOLUME /app/data
 
 EXPOSE 8080
-
 CMD ["node", "server.js"]
