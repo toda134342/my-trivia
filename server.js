@@ -93,6 +93,9 @@ let gamePaused = false;
 let pausedTimeLeft = 0;
 let pauseStartTime = 0;
 let questionTimeLeft = 22;
+let questionTickInterval = null; // ה-interval שמעדכן questionTimeLeft כל שנייה — צריך להישמר גלובלית כדי שאפשר יהיה לעצור אותו ב-pause
+let questionStartedAt = 0;       // timestamp (ms) של תחילת showQuestion — לשם מדידת פער קריין/טיימר בלוגים
+let narratorReadyAt = null;      // timestamp (ms) שבו הלקוח הודיע שהקריין סיים, לשאלה הנוכחית
 
 // ===== מערכת לוגים מתועדת — זיכרון + קובץ קבוע ב-/app/data =====
 const LOGS_DIR  = '/app/data/logs';
@@ -446,20 +449,47 @@ function showQuestion() {
   // שולח roundId — הלקוח יודיע בחזרה (/narrator-ready) כשהקריין מסיים
   // אם אין קריין (ttsOn=false בלקוח), הלקוח מתקשר מייד
   const roundId = Date.now();
+  questionStartedAt = roundId;
+  narratorReadyAt = null;
   broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit, roundId });
-  // השרת שולח startTimer מיד — הלקוח יתחיל ספירה ויזואלית רק אחרי שהקריין מסיים
-  // (speakQuestionThenStart מחכה לסיום הקריין לפני שמפעיל startTimer)
+  // ⚠️ הערה חשובה: השרת מפעיל כאן מיד את הטיימר האמיתי (questionTimer → revealAnswer),
+  // בלי להמתין לאירוע /narrator-ready. כלומר הטיימר שקובע מתי בפועל תתגלה התשובה
+  // רץ כבר בזמן שהקריין עדיין מקריא את השאלה אצל הלקוח, בעוד שהטיימר הוויזואלי מתחיל
+  // להיספר אצל השחקן רק אחרי שהקריין מסיים (ב-notifyNarratorReady). זה בדיוק פער
+  // הסנכרון שדווח. הלוגים 🕰️ למטה (ב-/narrator-ready וב-revealAnswer) ממחישים בפועל
+  // כמה זמן "אבד" לשחקן בגלל זה.
   broadcast({ type: 'startTimer', timeLimit, roundId });
   clearTimeout(questionTimer);
+  clearInterval(questionTickInterval);
   questionTimer = setTimeout(revealAnswer, timeLimit * 1000);
+  log('⏱️', `שאלה ${currentQuestion + 1}: טיימר שרת אמיתי הופעל עכשיו ל-${timeLimit}ש' (roundId=${roundId}) — גילוי תשובה מתוזמן ל-ts=${roundId + timeLimit * 1000}`);
   let tl = timeLimit;
-  const tlInterval = setInterval(() => { tl--; questionTimeLeft = tl; if(tl<=0) clearInterval(tlInterval); }, 1000);
-  log('⏱️', `שאלה ${currentQuestion + 1}: טיימר שרת ${timeLimit}ש' (roundId=${roundId})`);
+  questionTickInterval = setInterval(() => {
+    if (gamePaused) {
+      // 🩹 תיקון לבאג שדווח: לפני התיקון, ה-interval הזה המשיך להקטין את questionTimeLeft
+      // גם כשהמשחק "מושהה" — בדיוק התופעה "אני עושה עצור אבל המשחק ממשיך".
+      log('⏸️', `tick התעלם — המשחק מושהה (questionTimeLeft נשאר ${tl})`);
+      return;
+    }
+    tl--; questionTimeLeft = tl;
+    if (tl <= 0) clearInterval(questionTickInterval);
+  }, 1000);
 }
 
 function revealAnswer() {
   clearTimeout(questionTimer);
+  clearInterval(questionTickInterval);
   const q = questions[currentQuestion];
+  const timeLimit = gameMode === 'speedrun' ? 10 : gameMode === 'blitz' ? 5 : 22;
+  const elapsedSinceQuestionStart = Date.now() - questionStartedAt;
+  if (narratorReadyAt != null) {
+    // כמה זמן היה לשחקן לענות בפועל אחרי שהקריין סיים להקריא, לעומת timeLimit שאמור להיות לו
+    const actualAnswerWindowMs = Date.now() - narratorReadyAt;
+    const stolenMs = timeLimit * 1000 - actualAnswerWindowMs;
+    log('🕰️', `סנכרון קריין/טיימר: הקריין סיים אחרי ${narratorReadyAt - questionStartedAt}ms, גילוי תשובה אחרי ${elapsedSinceQuestionStart}ms מתחילת השאלה. לשחקן היה בפועל ${Math.round(actualAnswerWindowMs/1000)}ש' לענות במקום ${timeLimit}ש' (${stolenMs > 0 ? 'נגזלו ' + Math.round(stolenMs/1000) + 'ש' : 'תקין'})`);
+  } else {
+    log('🕰️', `סנכרון קריין/טיימר: לא התקבל narrator-ready לשאלה הזו לפני שהתשובה התגלתה (elapsed=${elapsedSinceQuestionStart}ms, timeLimit=${timeLimit}ש') — ייתכן שהקריין עדיין הקריא כשהתשובה התגלתה`);
+  }
   log('💡', `תשובה: ${q.a[q.correct]}`);
   broadcast({
     type: 'reveal',
@@ -638,6 +668,7 @@ app.get('/room-status', (req, res) => {
 });
 function stopAllTimers() {
   clearTimeout(questionTimer);
+  clearInterval(questionTickInterval);
   clearTimeout(reactionTimer);
   clearTimeout(wcTimer);
   clearTimeout(majTimer2);
@@ -672,7 +703,10 @@ app.get('/stop', (req, res) => {
 // ===== PAUSE / NEXT / REVEAL =====
 
 app.get('/pause', (req, res) => {
-  if (gameState !== 'playing') { res.send('not playing'); return; }
+  if (gameState !== 'playing') {
+    log('⏸️', `בקשת pause/resume התקבלה אבל gameState="${gameState}" (לא "playing") — מתעלם`);
+    res.send('not playing'); return;
+  }
   if (!gamePaused) {
     // PAUSE — freeze timer
     gamePaused = true;
@@ -681,19 +715,23 @@ app.get('/pause', (req, res) => {
     const q = questions[currentQuestion];
     if (q && questionTimer) {
       clearTimeout(questionTimer);
+      // questionTickInterval נשאר "חי" בכוונה (לא נעצר) אבל מכיל בדיקת gamePaused שמונעת ממנו
+      // להקטין את questionTimeLeft בזמן השהיה — ראו התיקון ב-showQuestion. לפני התיקון הוא
+      // המשיך לרוץ בלי תנאי, ולכן questionTimeLeft (וכתוצאה מכך pausedTimeLeft) היו שגויים.
       pausedTimeLeft = Math.max(0, questionTimeLeft * 1000);
     }
     broadcast({ type: 'paused' });
-    log('⏸️', 'משחק מושהה');
+    log('⏸️', `משחק מושהה — שאלה ${currentQuestion + 1}, נשארו ${questionTimeLeft}ש' (${pausedTimeLeft}ms) על הטיימר האמיתי`);
     res.send('paused');
   } else {
     // RESUME
     gamePaused = false;
+    const pauseDurationMs = Date.now() - pauseStartTime;
     if (pausedTimeLeft > 0) {
       questionTimer = setTimeout(revealAnswer, pausedTimeLeft);
     }
     broadcast({ type: 'resumed', secondsLeft: Math.round(pausedTimeLeft / 1000) });
-    log('▶️', 'משחק ממשיך');
+    log('▶️', `משחק ממשיך — היה מושהה ${Math.round(pauseDurationMs/1000)}ש', ממשיך עם ${Math.round(pausedTimeLeft/1000)}ש' נותרות`);
     res.send('resumed');
   }
 });
@@ -1558,8 +1596,21 @@ app.delete('/room-data/:roomId/contacts/:phone', checkRoomAuth, (req, res) => {
 });
 
 
-// /narrator-ready — הלקוח מודיע שהקריין סיים (לוג בלבד, השרת מנהל את הטיימר שלו בנפרד)
+// /narrator-ready — הלקוח מודיע שהקריין סיים.
+// ⚠️ שימו לב: זה עדיין לא משפיע על הטיימר האמיתי בשרת (questionTimer) — הוא רק נרשם ללוג
+// כדי שאפשר יהיה למדוד את פער הסנכרון (ראו לוג 🕰️ ב-revealAnswer). זה נשאר "רק לוג" כפי
+// שהיה גם קודם, אבל עכשיו לפחות רואים בבירור כמה זמן עבר בין תחילת השאלה לסיום ההקראה,
+// ובהמשך אפשר להחליט אם לגרום ל-questionTimer להתחיל רק מהרגע הזה (זה יהיה תיקון ארכיטקטוני,
+// לא רק לוגים — ראו הסבר בתשובה).
 app.post('/narrator-ready', (req, res) => {
+  const { roundId } = req.body || {};
+  const now = Date.now();
+  if (roundId === questionStartedAt) {
+    narratorReadyAt = now;
+    log('🎙️', `narrator-ready התקבל לשאלה הנוכחית — ${now - questionStartedAt}ms אחרי תחילת השאלה (roundId=${roundId})`);
+  } else {
+    log('⚠️', `narrator-ready התקבל עם roundId ישן/לא תואם (${roundId}) — השאלה הנוכחית התחילה ב-${questionStartedAt}. מתעלם.`);
+  }
   res.json({ ok: true });
 });
 
