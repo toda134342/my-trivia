@@ -446,32 +446,15 @@ function showQuestion() {
   // שולח roundId — הלקוח יודיע בחזרה (/narrator-ready) כשהקריין מסיים
   // אם אין קריין (ttsOn=false בלקוח), הלקוח מתקשר מייד
   const roundId = Date.now();
-  _pendingRoundId = roundId;
   broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit, roundId });
-
-  clearTimeout(questionTimer);
-  // safety fallback: אם הלקוח לא שלח narrator-ready תוך timeLimit+20 שניות → מתחיל ממילא
-  questionTimer = setTimeout(() => {
-    if (_pendingRoundId === roundId) {
-      log('⚠️', `שאלה ${currentQuestion + 1}: timeout בלי narrator-ready — מתחיל טיימר`);
-      _startQuestionTimer(timeLimit, roundId);
-    }
-  }, (timeLimit + 20) * 1000);
-}
-
-let _pendingRoundId = null;
-function _startQuestionTimer(timeLimit, roundId) {
-  if (_pendingRoundId !== roundId) {
-    log('🔕', `_startQuestionTimer: roundId ${roundId} לא רלוונטי (pending=${_pendingRoundId})`);
-    return;
-  }
-  _pendingRoundId = null;
-  clearTimeout(questionTimer);
+  // השרת שולח startTimer מיד — הלקוח יתחיל ספירה ויזואלית רק אחרי שהקריין מסיים
+  // (speakQuestionThenStart מחכה לסיום הקריין לפני שמפעיל startTimer)
   broadcast({ type: 'startTimer', timeLimit, roundId });
-  log('⏱️', `טיימר התחיל: ${timeLimit}ש' (roundId=${roundId})`);
+  clearTimeout(questionTimer);
   questionTimer = setTimeout(revealAnswer, timeLimit * 1000);
   let tl = timeLimit;
   const tlInterval = setInterval(() => { tl--; questionTimeLeft = tl; if(tl<=0) clearInterval(tlInterval); }, 1000);
+  log('⏱️', `שאלה ${currentQuestion + 1}: טיימר שרת ${timeLimit}ש' (roundId=${roundId})`);
 }
 
 function revealAnswer() {
@@ -911,9 +894,11 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
       '-p', String(profile.pitch),
       '-s', String(rateAdj),
       '-a', String(profile.amp),
-      '-w', tmpFile,   // פלט WAV לקובץ
+      '-w', tmpFile,
+      '--',            // מפריד בין flags לטקסט
       text
     ];
+    log('🎤', 'espeak-ng: ' + text.slice(0,40) + ' [pitch=' + profile.pitch + ' speed=' + rateAdj + ']');
 
     const proc = spawn('espeak-ng', args, { timeout: 15000 });
     let errBuf = '';
@@ -1519,17 +1504,9 @@ app.delete('/room-data/:roomId/contacts/:phone', checkRoomAuth, (req, res) => {
 });
 
 
-// ===== /narrator-ready — הלקוח מודיע שהקריין סיים, ורק אז הטיימר מתחיל =====
+// /narrator-ready — הלקוח מודיע שהקריין סיים (לוג בלבד, השרת מנהל את הטיימר שלו בנפרד)
 app.post('/narrator-ready', (req, res) => {
-  const { roundId } = req.body || {};
-  log('🎙️', `narrator-ready: roundId=${roundId} pending=${_pendingRoundId}`);
   res.json({ ok: true });
-  if (roundId && _pendingRoundId === roundId) {
-    const timeLimit = gameMode === 'speedrun' ? 10 : gameMode === 'blitz' ? 5 : 22;
-    _startQuestionTimer(timeLimit, roundId);
-  } else {
-    log('🔕', `narrator-ready: roundId ${roundId} לא תואם — מתעלם`);
-  }
 });
 
 app.listen(PORT, async () => {

@@ -3805,7 +3805,12 @@ function handle(d){
 
     case 'startTimer':
       ttsLog('case startTimer — server signaled GO', { timeLimit: d.timeLimit, roundId: d.roundId });
-      startTimer(d.timeLimit||22);
+      // אם יש קריין פעיל — notifyNarratorReady יפעיל את startTimer אחרי הסיום
+      // אם אין קריין — מפעילים מיד
+      if (!ttsOn || window._ttsBlocked) {
+        startTimer(d.timeLimit||22);
+      }
+      // אם ttsOn=true: speakQuestionThenStart כבר בתהליך, onDone יקרא ל-notifyNarratorReady שיפעיל startTimer
       break;
 
     case 'playerEliminated':
@@ -5233,8 +5238,13 @@ function preloadEdge(text, voiceId, speed) {
   if (_edgeBlobCache.has(key)) return Promise.resolve(_edgeBlobCache.get(key));
   const params = new URLSearchParams({ text: text.slice(0,500), voice: voiceId, speed: spd });
   return fetch('/tts?' + params.toString())
-    .then(r => r.ok ? r.blob() : Promise.reject('tts fail'))
+    .then(r => {
+      if (!r.ok) { ttsLog('preloadEdge HTTP error', r.status, r.statusText); return Promise.reject('tts http ' + r.status); }
+      ttsLog('preloadEdge HTTP ok, content-type:', r.headers.get('content-type'));
+      return r.blob();
+    })
     .then(blob => {
+      ttsLog('preloadEdge blob size:', blob.size, 'type:', blob.type);
       const url = URL.createObjectURL(blob);
       _edgeBlobCache.set(key, url);
       // נקה cache ישן
@@ -5308,17 +5318,11 @@ function speakQuestion(question, answers) { /* dead — kept for safety, never c
 // במקום להתחיל את הטיימר הוויזואלי מקומית ברגע שהקריין מסיים, מודיעים לשרת "מוכן" —
 // והשרת הוא זה שמשדר לכולם 'startTimer' באותו רגע בדיוק, כדי שכל המסכים יתחילו יחד.
 function notifyNarratorReady(roundId, tl) {
-  ttsLog('notifyNarratorReady', { roundId, tl });
-  if (roundId == null) { startTimer(tl); return; } // אין roundId (מצב ישן) — נופלים לזרימה המקומית
-  fetch('/narrator-ready', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ roundId })
-  }).catch(() => {
-    // אם השרת לא הגיב בכלל — לא נתקע את השחקן הזה, נתחיל מקומית
-    ttsLog('notifyNarratorReady fetch FAILED — local fallback startTimer');
-    startTimer(tl);
-  });
+  ttsLog('notifyNarratorReady → startTimer locally', { roundId, tl });
+  // הטיימר הויזואלי מתחיל מקומית — השרת מנהל את timeout ה-revealAnswer שלו בנפרד
+  startTimer(tl);
+  // POST לשרת לצורך לוג בלבד
+  fetch('/narrator-ready', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roundId }) }).catch(() => {});
 }
 
 function speakQuestionThenStart(question, answers, timeLimit, roundId) {
