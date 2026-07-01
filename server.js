@@ -893,6 +893,60 @@ function detectPiperBin() {
   log('🔍', `espeak-ng-data: ${_piperEspeakData || '(לא נמצא — Piper ינסה בלעדיו)'}`);
 }
 
+
+const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
+const VOICE_NAME = 'en_US-lessac-medium';
+let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
+
+const HF_BASE   = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium';
+const HF_SUFFIX = '?download=true';
+
+async function ensurePiperVoice() {
+  detectPiperBin();
+  const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
+  const jsonPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx.json');
+  if (fs.existsSync(onnxPath) && fs.existsSync(jsonPath)) {
+    log('✅', `Piper: מודל קיים: ${onnxPath}`);
+    PIPER_MODEL = onnxPath; return;
+  }
+  fs.mkdirSync(VOICE_DIR, { recursive: true });
+
+  const download = (url, dest, _hops) => new Promise((resolve, reject) => {
+    _hops = _hops || 0;
+    if (_hops > 8) return reject(new Error('יותר מדי redirects'));
+    log('⬇️', 'Piper: מוריד ' + url.split('?')[0].split('/').pop() + '...');
+    const proto = url.startsWith('https') ? require('https') : require('http');
+    const file  = fs.createWriteStream(dest);
+    const req   = proto.get(url, { timeout: 120000 }, function(res) {
+      if ([301,302,307,308].includes(res.statusCode)) {
+        file.close(); fs.unlink(dest, function(){});
+        let loc = res.headers.location || '';
+        try { loc = decodeURIComponent(loc); } catch(e) {}
+        if (loc && !loc.startsWith('http')) { const b = new URL(url); loc = b.origin + loc; }
+        return download(loc, dest, _hops + 1).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        file.close(); fs.unlink(dest, function(){});
+        return reject(new Error('HTTP ' + res.statusCode + ' עבור ' + url.slice(0,80)));
+      }
+      res.pipe(file);
+      file.on('finish', function() { file.close(resolve); });
+      file.on('error', function(e) { fs.unlink(dest, function(){}); reject(e); });
+    });
+    req.on('error', function(e) { fs.unlink(dest, function(){}); reject(e); });
+    req.on('timeout', function() { req.destroy(); reject(new Error('timeout בהורדה')); });
+  });
+
+  try {
+    await download(HF_BASE + '/' + VOICE_NAME + '.onnx' + HF_SUFFIX, onnxPath);
+    await download(HF_BASE + '/' + VOICE_NAME + '.onnx.json' + HF_SUFFIX, jsonPath);
+    log('✅', 'Piper: מודל הורד → ' + onnxPath);
+    PIPER_MODEL = onnxPath;
+  } catch (e) {
+    log('🔇', 'Piper: הורדת מודל נכשלה — ' + e.message);
+  }
+}
+
 // ===== פרופילי קולות גבריים =====
 // Piper עצמו מייצר קול אחד, אנחנו נותנים "אישיות" שונה דרך עיבוד Sox (rate/pitch/reverb).
 // כל הקולות גבריים ותוססים כפי שביקשת.
