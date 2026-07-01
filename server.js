@@ -829,13 +829,14 @@ app.get('/', (req, res) => {
 const { execFile, spawn } = require('child_process');
 const os = require('os');
 
-const PIPER_BIN  = '/opt/piper-env/bin/piper';
+const PIPER_BIN  = '/opt/piper-env/bin/python3';
+const PIPER_ARGS_PREFIX = ['-m', 'piper'];
 const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
-const VOICE_NAME = 'he_IL-local-high';
+const VOICE_NAME = 'en_US-lessac-medium';
 let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
 
 // הורדת המודל בעלייה (אם עוד לא קיים) — wget ישירות מ-HuggingFace
-const HF_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/he/he_IL/local/high';
+const HF_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium';
 const HF_SUFFIX = '?download=true';
 async function ensurePiperVoice() {
   const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
@@ -944,7 +945,7 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
       '--length_scale', String(Math.round((1.0 / finalRate) * 100) / 100),  // length_scale הפוך מ-rate
     ];
 
-    const proc = spawn(PIPER_BIN, piperArgs, { timeout: 15000 });
+    const proc = spawn(PIPER_BIN, [...PIPER_ARGS_PREFIX, ...piperArgs], { timeout: 15000 });
 
     let errBuf = '';
     proc.stderr.on('data', d => { errBuf += d.toString(); });
