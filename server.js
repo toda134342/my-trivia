@@ -244,36 +244,6 @@ function broadcast(data) {
   clients = clients.filter(c => { try { c.write(msg); return true; } catch { return false; } });
 }
 
-// ===== סנכרון טיימר עם קריין (תיקון "טיימר לא מגיב אחרי ספירה לאחור") =====
-// הבעיה שהייתה: הטיימר הרשמי (שקובע מתי מתגלה התשובה) התחיל מיד עם שידור השאלה,
-// בעוד שהטיימר הוויזואלי בלקוח מתחיל רק אחרי שהקריין מסיים להקריא (יכול לקחת עד 6-9 שניות
-// אם ה-TTS נכשל/נופל ל-fallback). זה יצר פער בין מה שהשרת "חושב" לבין מה שהשחקן רואה.
-// הפתרון: השרת לא מתחיל את הטיימר האמיתי בעצמו — הוא מחכה לאישור מהלקוח (/narrator-ready)
-// שהקריין סיים (או מיד אם TTS כבוי), ורק אז משדר 'startTimer' לכולם כדי שכל המסכים יתחילו
-// באותו הרגע בדיוק. יש רשת ביטחון (12 שניות) למקרה שאף לקוח לא מדווח (למשל תקלת רשת מוחלטת).
-let _narratorRoundId = 0;
-let _narratorStartFn = null;
-let _narratorStarted = false;
-let _narratorSafetyTimer = null;
-
-function armNarratorSync(startFn) {
-  _narratorRoundId++;
-  const myId = _narratorRoundId;
-  _narratorStartFn = startFn;
-  _narratorStarted = false;
-  clearTimeout(_narratorSafetyTimer);
-  _narratorSafetyTimer = setTimeout(() => fireNarratorStart(myId), 12000);
-  return myId;
-}
-
-function fireNarratorStart(roundId) {
-  if (roundId !== _narratorRoundId) return; // סיבוב ישן — לא רלוונטי יותר
-  if (_narratorStarted) return;
-  _narratorStarted = true;
-  clearTimeout(_narratorSafetyTimer);
-  if (_narratorStartFn) _narratorStartFn();
-}
-
 // ===== GAME LOGIC =====
 function handleAnswer(player, chosen) {
   if (!questions[currentQuestion]) return;
@@ -473,15 +443,12 @@ function showQuestion() {
   questionTimeLeft = timeLimit;
   Object.values(players).forEach(p => { p.answered = false; p._chosen = null; });
   log('❓', `שאלה ${currentQuestion + 1}: ${q.q}`);
+  broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit });
   clearTimeout(questionTimer);
-  // הטיימר האמיתי לא מתחיל כאן — הוא ממתין לאישור מהלקוח שהקריין סיים (ראו armNarratorSync)
-  const roundId = armNarratorSync(() => {
-    questionTimer = setTimeout(revealAnswer, timeLimit * 1000);
-    let tl = timeLimit;
-    const tlInterval = setInterval(() => { tl--; questionTimeLeft = tl; if (tl <= 0) clearInterval(tlInterval); }, 1000);
-    broadcast({ type: 'startTimer', timeLimit, roundId });
-  });
-  broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit, roundId });
+  questionTimer = setTimeout(revealAnswer, timeLimit * 1000);
+  // עדכן questionTimeLeft כל שנייה
+  let tl = timeLimit;
+  const tlInterval = setInterval(() => { tl--; questionTimeLeft = tl; if(tl<=0) clearInterval(tlInterval); }, 1000);
 }
 
 function revealAnswer() {
@@ -856,20 +823,67 @@ app.get('/', (req, res) => {
   else res.status(404).send('not found');
 });
 
-// ========== espeak-ng TTS — מנוע קול מקומי ==========
-// espeak-ng מותקן כבינארי במערכת (apt) — אין הורדת מודל, אין תלות ברשת בכלל.
-// הוחלף מ-Piper כי ל-Piper אין בכלל קול עברי רשמי (rhasspy/piper-voices לא כולל he/he_IL —
-// זו הסיבה שההורדה תמיד נכשלה ב-404, לא תקלת רשת זמנית).
+// ========== Piper TTS — מנוע קול מקומי ==========
+// piper-tts pip package. מודל עברי מוריד אוטומטית בעלייה ראשונה, נשמר ב-volume.
 
-const { spawn } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const os = require('os');
 
-const ESPEAK_BIN = process.env.ESPEAK_BIN || 'espeak-ng';
-const ESPEAK_VOICE = 'he'; // קול עברי מובנה ב-espeak-ng
+const PIPER_BIN  = '/opt/piper-env/bin/piper';
+const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
+const VOICE_NAME = 'he_IL-local-high';
+let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
+
+// הורדת המודל בעלייה (אם עוד לא קיים) — wget ישירות מ-HuggingFace
+const HF_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/he/he_IL/local/high';
+const HF_SUFFIX = '?download=true';
+async function ensurePiperVoice() {
+  const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
+  const jsonPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx.json');
+  if (fs.existsSync(onnxPath) && fs.existsSync(jsonPath)) {
+    log('✅', `Piper: מודל קיים: ${onnxPath}`);
+    PIPER_MODEL = onnxPath;
+    return;
+  }
+  fs.mkdirSync(VOICE_DIR, { recursive: true });
+
+  const download = (url, dest, _redirects = 0) => new Promise((resolve, reject) => {
+    if (_redirects > 5) return reject(new Error('יותר מדי redirects'));
+    log('⬇️', `Piper: מוריד ${url.split('?')[0].split('/').pop()}...`);
+    const proto = url.startsWith('https') ? require('https') : require('http');
+    const file  = fs.createWriteStream(dest);
+    const req = proto.get(url, { timeout: 120000 }, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
+        file.close();
+        fs.unlink(dest, () => {});
+        return download(res.headers.location, dest, _redirects + 1).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        file.close();
+        fs.unlink(dest, () => {});
+        return reject(new Error(`HTTP ${res.statusCode} עבור ${url.slice(0, 80)}`));
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+      file.on('error', (e) => { fs.unlink(dest, () => {}); reject(e); });
+    });
+    req.on('error', (e) => { fs.unlink(dest, () => {}); reject(e); });
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout בהורדה')); });
+  });
+
+  try {
+    await download(`${HF_BASE}/${VOICE_NAME}.onnx${HF_SUFFIX}`, onnxPath);
+    await download(`${HF_BASE}/${VOICE_NAME}.onnx.json${HF_SUFFIX}`, jsonPath);
+    log('✅', `Piper: מודל הורד → ${onnxPath}`);
+    PIPER_MODEL = onnxPath;
+  } catch (e) {
+    log('🔇', `Piper: הורדת מודל נכשלה — ${e.message}`);
+  }
+}
 
 // ===== פרופילי קולות גבריים =====
-// espeak-ng תומך באופן טבעי ב-speed (מילים לדקה) ו-pitch (0-99), כך שכל "אישיות" קול
-// מקבלת מהירות וגובה צליל שונים ישירות מהמנוע — בלי צורך בעיבוד post-processing חיצוני.
+// Piper עצמו מייצר קול אחד, אנחנו נותנים "אישיות" שונה דרך עיבוד Sox (rate/pitch/reverb).
+// כל הקולות גבריים ותוססים כפי שביקשת.
 const EDGE_VOICES = {
   // --- גבריים ---
   'edge:avri':        { label: '👨 אברי — קריין רגיל',       rate: 1.0,  pitch: 0   },
@@ -886,8 +900,8 @@ const EDGE_VOICES = {
 const _ttsCache = new Map();
 const TTS_CACHE_MAX = 200;
 
-// ===== הגבלת מקביליות — espeak-ng מאוד יעיל אבל נגביל ל-2 תהליכים מקבילים כדי לא להעמיס את ה-CPU =====
-// תור פשוט שמריץ לכל היותר MAX_CONCURRENT_TTS תהליכי espeak-ng במקביל; השאר ממתינים בתור
+// ===== הגבלת מקביליות — Piper מאוד יעיל אבל נגביל ל-2 תהליכים מקבילים כדי לא להעמיס את ה-CPU =====
+// תור פשוט שמריץ לכל היותר MAX_CONCURRENT_TTS תהליכי Piper במקביל; השאר ממתינים בתור
 const MAX_CONCURRENT_TTS = 2;
 let _ttsActiveCount = 0;
 const _ttsWaitQueue = [];
@@ -922,21 +936,15 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
     const profile = EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri'];
     const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.wav`);
 
-    // espeak-ng: מהירות במילים-לדקה (בסיס 165, מוכפל ב-rate*speed), pitch 0-99 (בסיס 50)
+    // Piper מקבל טקסט מ-stdin ומייצר WAV לקובץ
     const finalRate = (profile.rate || 1.0) * (speed || 1.0);
-    const wpm = Math.max(80, Math.min(450, Math.round(165 * finalRate)));
-    const pitch = Math.max(0, Math.min(99, Math.round(50 + (profile.pitch || 0) * 5)));
-
-    const espeakArgs = [
-      '--stdin',
-      '-v', ESPEAK_VOICE,
-      '-s', String(wpm),
-      '-p', String(pitch),
-      '-a', '160',
-      '-w', tmpFile,
+    const piperArgs = [
+      '--model', PIPER_MODEL,
+      '--output_file', tmpFile,
+      '--length_scale', String(Math.round((1.0 / finalRate) * 100) / 100),  // length_scale הפוך מ-rate
     ];
 
-    const proc = spawn(ESPEAK_BIN, espeakArgs, { timeout: 15000 });
+    const proc = spawn(PIPER_BIN, piperArgs, { timeout: 15000 });
 
     let errBuf = '';
     proc.stderr.on('data', d => { errBuf += d.toString(); });
@@ -947,24 +955,25 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
     proc.on('close', (code) => {
       if (code !== 0) {
         fs.unlink(tmpFile, () => {});
-        return reject(new Error(`espeak-ng נכשל (קוד ${code}): ${errBuf.trim().slice(0, 200)}`));
+        return reject(new Error(`Piper נכשל (קוד ${code}): ${errBuf.trim().slice(0, 200)}`));
       }
       fs.readFile(tmpFile, (readErr, data) => {
         fs.unlink(tmpFile, () => {});
         if (readErr) return reject(readErr);
-        if (!data || data.length === 0) return reject(new Error('espeak-ng החזיר קובץ ריק'));
+        if (!data || data.length === 0) return reject(new Error('Piper החזיר קובץ ריק'));
         resolve(data);
       });
     });
 
     proc.on('error', (err) => {
       fs.unlink(tmpFile, () => {});
-      reject(new Error(`espeak-ng שגיאת תהליך: ${err.message}`));
+      reject(new Error(`Piper שגיאת תהליך: ${err.message}`));
     });
   });
 }
 
-// קריאה לשירות ה-TTS הפנימי (espeak-ng), עם ניסיון חוזר אוטומטי אם הניסיון הראשון נכשל
+// קריאה לשרת ה-TTS הפנימי, עם ניסיון חוזר אוטומטי אם הניסיון הראשון נכשל
+// (לרוב נכשל בגלל timeout רגעי מול שרתי מיקרוסופט — לא צריך ליפול לדפדפן, פשוט לנסות שוב)
 let _lastTtsErrSignature = null;
 let _lastTtsErrTime = 0;
 let _ttsErrSuppressedCount = 0;
@@ -998,7 +1007,7 @@ async function fetchTTS(text, voiceKey, speed = 1.0) {
       return data;
     } catch (err) {
       lastErr = err;
-      logTtsError('⚠️', `espeak-ng TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
+      logTtsError('⚠️', `Piper TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
       if (attempt < 3) await new Promise(r => setTimeout(r, 400 * attempt));
     }
   }
@@ -1016,16 +1025,9 @@ app.get('/tts', async (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.end(buffer);
   } catch (err) {
-    logTtsError('🛑', `espeak-ng TTS נכשל סופית [${key}] "${text.slice(0,30)}": ${err.message}`);
+    logTtsError('🛑', `Piper TTS נכשל סופית [${key}] "${text.slice(0,30)}": ${err.message}`);
     res.status(503).json({ error: 'שירות הקריינות לא זמין כרגע, נסה שוב' });
   }
-});
-
-// סנכרון טיימר — הלקוח קורא לזה כשהקריין סיים להקריא (או מיד אם TTS כבוי)
-app.post('/narrator-ready', (req, res) => {
-  const roundId = Number((req.body || {}).roundId);
-  fireNarratorStart(roundId);
-  res.json({ ok: true });
 });
 
 // preload — מכין את האודיו לcache מראש, מחזיר 200 מיד
@@ -1552,11 +1554,12 @@ app.delete('/room-data/:roomId/contacts/:phone', checkRoomAuth, (req, res) => {
 app.listen(PORT, async () => {
   log('🚀', `שרת רץ על פורט ${PORT}`);
   loadNames();
-  // בדיקת תקינות espeak-ng — קול מובנה, אין הורדה נדרשת
+  // הורדת מודל Piper בפעם הראשונה (אם לא קיים) + בדיקת תקינות
+  await ensurePiperVoice();
   fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(buf => {
-    log('✅', `espeak-ng TTS: ניגון לדוגמה הצליח (${buf.length} בתים)`);
+    log('✅', `Piper TTS: ניגון לדוגמה הצליח (${buf.length} בתים)`);
   }).catch(e => {
-    log('🔇', `espeak-ng TTS: ניגון לדוגמה נכשל — ${e.message.slice(0,300)}`);
+    log('🔇', `Piper TTS: ניגון לדוגמה נכשל — ${e.message.slice(0,300)}`);
   });
 });
 
