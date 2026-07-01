@@ -432,7 +432,6 @@ function startGame(topic = 'all', mode = 'classic', topics = null, roomId = null
 
 function showQuestion() {
   if (currentQuestion >= questions.length) { endGame(); return; }
-  // בהישרדות — בדוק אם נשאר רק שחקן אחד
   if (gameMode === 'survival') {
     const alive = Object.values(players).filter(p => !p._eliminated);
     if (alive.length <= 1 && Object.keys(players).length > 1) { endGame(); return; }
@@ -443,10 +442,34 @@ function showQuestion() {
   questionTimeLeft = timeLimit;
   Object.values(players).forEach(p => { p.answered = false; p._chosen = null; });
   log('❓', `שאלה ${currentQuestion + 1}: ${q.q}`);
-  broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit });
+
+  // שולח roundId — הלקוח יודיע בחזרה (/narrator-ready) כשהקריין מסיים
+  // אם אין קריין (ttsOn=false בלקוח), הלקוח מתקשר מייד
+  const roundId = Date.now();
+  _pendingRoundId = roundId;
+  broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit, roundId });
+
   clearTimeout(questionTimer);
+  // safety fallback: אם הלקוח לא שלח narrator-ready תוך timeLimit+20 שניות → מתחיל ממילא
+  questionTimer = setTimeout(() => {
+    if (_pendingRoundId === roundId) {
+      log('⚠️', `שאלה ${currentQuestion + 1}: timeout בלי narrator-ready — מתחיל טיימר`);
+      _startQuestionTimer(timeLimit, roundId);
+    }
+  }, (timeLimit + 20) * 1000);
+}
+
+let _pendingRoundId = null;
+function _startQuestionTimer(timeLimit, roundId) {
+  if (_pendingRoundId !== roundId) {
+    log('🔕', `_startQuestionTimer: roundId ${roundId} לא רלוונטי (pending=${_pendingRoundId})`);
+    return;
+  }
+  _pendingRoundId = null;
+  clearTimeout(questionTimer);
+  broadcast({ type: 'startTimer', timeLimit, roundId });
+  log('⏱️', `טיימר התחיל: ${timeLimit}ש' (roundId=${roundId})`);
   questionTimer = setTimeout(revealAnswer, timeLimit * 1000);
-  // עדכן questionTimeLeft כל שנייה
   let tl = timeLimit;
   const tlInterval = setInterval(() => { tl--; questionTimeLeft = tl; if(tl<=0) clearInterval(tlInterval); }, 1000);
 }
@@ -824,101 +847,50 @@ app.get('/', (req, res) => {
 });
 
 // ========== Piper TTS — מנוע קול מקומי ==========
-// piper-tts pip package. מודל עברי מוריד אוטומטית בעלייה ראשונה, נשמר ב-volume.
+// piper-tts מותקן דרך pip → binary נמצא ב-/usr/local/bin/piper
+// espeak-ng מותקן דרך apt → נתיב הנתונים נמצא דינמית
 
 const { execFile, spawn } = require('child_process');
+const { execSync } = require('child_process');
 const os = require('os');
 
-// מציאת Python עם piper-tts מותקן
-const { execSync } = require('child_process');
-const PIPER_ARGS_PREFIX = ['-m', 'piper'];
-let PIPER_BIN = 'python3';
-
-// חיפוש python שיש בו piper — מוגדר בעלייה ב-ensurePiperVoice
+// ===== גילוי נתיב Piper binary ו-espeak-ng-data =====
+let PIPER_BIN = '/usr/local/bin/piper';
+const PIPER_ARGS_PREFIX = [];  // binary ישיר, ללא python -m prefix
+let _piperEspeakData = null;
 let _piperBinDetected = false;
+
 function detectPiperBin() {
   if (_piperBinDetected) return;
   _piperBinDetected = true;
-  const candidates = [
-    '/opt/piper-env/bin/python3.11',
-    '/opt/piper-env/bin/python3',
-    '/opt/piper-env/bin/python',
-    '/usr/local/bin/python3',
-    '/usr/bin/python3',
+
+  // מצא piper binary
+  const binCandidates = ['/usr/local/bin/piper', '/usr/bin/piper'];
+  for (const c of binCandidates) {
+    try { fs.accessSync(c, fs.constants.X_OK); PIPER_BIN = c; break; } catch {}
+  }
+  log('🔍', `Piper binary: ${PIPER_BIN}`);
+
+  // מצא espeak-ng-data — קודם נתיבי apt, אחר כך pip
+  const espeakCandidates = [
+    '/usr/lib/x86_64-linux-gnu/espeak-ng-data',
+    '/usr/lib/aarch64-linux-gnu/espeak-ng-data',
+    '/usr/lib/arm-linux-gnueabihf/espeak-ng-data',
+    '/usr/share/espeak-ng-data',
+    '/usr/local/lib/python3.12/dist-packages/piper/espeak-ng-data',
+    '/usr/local/lib/python3.11/dist-packages/piper/espeak-ng-data',
+    '/usr/local/lib/python3.10/dist-packages/piper/espeak-ng-data',
   ];
-  for (const c of candidates) {
+  for (const p of espeakCandidates) {
+    try { fs.accessSync(p); _piperEspeakData = p; break; } catch {}
+  }
+  if (!_piperEspeakData) {
     try {
-      const r = execSync(`${c} -c "import piper; print('ok')"`, { stdio: 'pipe', timeout: 5000 });
-      PIPER_BIN = c;
-      log('✅', `Piper: Python נמצא: ${c}`);
-      return;
-    } catch(e) {}
+      const found = execSync('find /usr/lib /usr/share /usr/local/lib -name "espeak-ng-data" -type d 2>/dev/null | head -1', { stdio: 'pipe', timeout: 3000 }).toString().trim();
+      if (found) _piperEspeakData = found;
+    } catch {}
   }
-  // fallback: מצא כל python שיש בו piper
-  try {
-    const which = execSync('find /opt/piper-env /usr/local /usr -name "python*" -type f 2>/dev/null | head -5', { stdio: 'pipe', timeout: 3000 }).toString().trim();
-    log('🔍', `Piper: Python candidates: ${which}`);
-  } catch {}
-  log('⚠️', 'Piper: לא נמצא Python עם piper — משתמש ב-python3');
-}
-const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
-const VOICE_NAME = 'en_US-lessac-medium';
-let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
-
-// הורדת המודל בעלייה (אם עוד לא קיים) — wget ישירות מ-HuggingFace
-const HF_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium';
-const HF_SUFFIX = '?download=true';
-async function ensurePiperVoice() {
-  detectPiperBin();
-  const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
-  const jsonPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx.json');
-  if (fs.existsSync(onnxPath) && fs.existsSync(jsonPath)) {
-    log('✅', `Piper: מודל קיים: ${onnxPath}`);
-    PIPER_MODEL = onnxPath;
-    return;
-  }
-  fs.mkdirSync(VOICE_DIR, { recursive: true });
-
-  const download = (url, dest, _redirects = 0) => new Promise((resolve, reject) => {
-    if (_redirects > 5) return reject(new Error('יותר מדי redirects'));
-    log('⬇️', `Piper: מוריד ${url.split('?')[0].split('/').pop()}...`);
-    const proto = url.startsWith('https') ? require('https') : require('http');
-    const file  = fs.createWriteStream(dest);
-    const req = proto.get(url, { timeout: 120000 }, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
-        file.close();
-        fs.unlink(dest, () => {});
-        let loc = res.headers.location;
-        // תיקון URL מקודד ל-URL תקני
-        try { loc = decodeURIComponent(loc); } catch {}
-        // אם ה-location הוא path יחסי, הרכב URL מלא
-        if (loc && !loc.startsWith('http')) {
-          const base = new URL(url);
-          loc = base.origin + loc;
-        }
-        return download(loc, dest, _redirects + 1).then(resolve).catch(reject);
-      }
-      if (res.statusCode !== 200) {
-        file.close();
-        fs.unlink(dest, () => {});
-        return reject(new Error(`HTTP ${res.statusCode} עבור ${url.slice(0, 80)}`));
-      }
-      res.pipe(file);
-      file.on('finish', () => file.close(resolve));
-      file.on('error', (e) => { fs.unlink(dest, () => {}); reject(e); });
-    });
-    req.on('error', (e) => { fs.unlink(dest, () => {}); reject(e); });
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout בהורדה')); });
-  });
-
-  try {
-    await download(`${HF_BASE}/${VOICE_NAME}.onnx${HF_SUFFIX}`, onnxPath);
-    await download(`${HF_BASE}/${VOICE_NAME}.onnx.json${HF_SUFFIX}`, jsonPath);
-    log('✅', `Piper: מודל הורד → ${onnxPath}`);
-    PIPER_MODEL = onnxPath;
-  } catch (e) {
-    log('🔇', `Piper: הורדת מודל נכשלה — ${e.message}`);
-  }
+  log('🔍', `espeak-ng-data: ${_piperEspeakData || '(לא נמצא — Piper ינסה בלעדיו)'}`);
 }
 
 // ===== פרופילי קולות גבריים =====
@@ -982,8 +954,9 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
     const piperArgs = [
       '--model', PIPER_MODEL,
       '--output_file', tmpFile,
-      '--length_scale', String(Math.round((1.0 / finalRate) * 100) / 100),  // length_scale הפוך מ-rate
+      '--length_scale', String(Math.round((1.0 / finalRate) * 100) / 100),
     ];
+    if (_piperEspeakData) piperArgs.push('--espeak_data', _piperEspeakData);
 
     const proc = spawn(PIPER_BIN, [...PIPER_ARGS_PREFIX, ...piperArgs], { timeout: 15000 });
 
@@ -1590,6 +1563,20 @@ app.delete('/room-data/:roomId/contacts/:phone', checkRoomAuth, (req, res) => {
   saveRoomData(roomId, data);
   log('🗑️', `חדר "${roomId}" — איש קשר נמחק: ${phone}`);
   res.json({ ok: true });
+});
+
+
+// ===== /narrator-ready — הלקוח מודיע שהקריין סיים, ורק אז הטיימר מתחיל =====
+app.post('/narrator-ready', (req, res) => {
+  const { roundId } = req.body || {};
+  log('🎙️', `narrator-ready: roundId=${roundId} pending=${_pendingRoundId}`);
+  res.json({ ok: true });
+  if (roundId && _pendingRoundId === roundId) {
+    const timeLimit = gameMode === 'speedrun' ? 10 : gameMode === 'blitz' ? 5 : 22;
+    _startQuestionTimer(timeLimit, roundId);
+  } else {
+    log('🔕', `narrator-ready: roundId ${roundId} לא תואם — מתעלם`);
+  }
 });
 
 app.listen(PORT, async () => {
