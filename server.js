@@ -433,6 +433,27 @@ function startGame(topic = 'all', mode = 'classic', topics = null, roomId = null
   return true;
 }
 
+// ===== סנכרון קריין/טיימר — מצב גלובלי =====
+// answerWindowStartedFor: ה-roundId שעבורו כבר הופעל הטיימר האמיתי (questionTimer). מונע הפעלה כפולה
+//   אם גם narrator-ready וגם ה-fallback מגיעים כמעט ביחד.
+// narratorFallbackTimer: רשת ביטחון — אם אף לקוח לא מדווח narrator-ready תוך זמן סביר (לדוגמה קריין
+//   כבוי בכל הלקוחות, או תקלת רשת), מתחילים את חלון התשובה בכל זאת כדי שלא "נתקע" לנצח.
+// pendingAnswerWindow: אם התקבל narrator-ready/fallback בזמן שהמשחק מושהה (gamePaused), שומרים כאן
+//   את הבקשה ומפעילים אותה בפועל רק ב-resume.
+let answerWindowStartedFor = null;
+let narratorFallbackTimer = null;
+let pendingAnswerWindow = null; // { roundId, timeLimit }
+const NARRATOR_FALLBACK_MS = 9000; // מקסימום זמן המתנה לקריין לפני שמתחילים את הטיימר בכל מקרה
+
+// revealAdvanceStartedFor / revealNarratorFallbackTimer — אותו רעיון, אבל עבור המעבר לשאלה הבאה
+// אחרי reveal: לא עוברים לשאלה הבאה לפני שהקריין סיים להקריא "התשובה הנכונה היא...", אלא אם
+// עבר יותר מדי זמן (fallback) — כדי שהמשחק לא ייתקע אם אין תגובה מהלקוח.
+let revealRoundId = null;
+let revealAdvanceStartedFor = null;
+let revealNarratorFallbackTimer = null;
+const REVEAL_NARRATOR_FALLBACK_MS = 7000;
+const REVEAL_MIN_DISPLAY_MS = 4000; // גם אם הקריין מסיים מהר מאוד, משאירים את מסך התשובה זמן מינימלי לקריאה
+
 function showQuestion() {
   if (currentQuestion >= questions.length) { endGame(); return; }
   if (gameMode === 'survival') {
@@ -451,18 +472,50 @@ function showQuestion() {
   const roundId = Date.now();
   questionStartedAt = roundId;
   narratorReadyAt = null;
+  answerWindowStartedFor = null;
+  clearTimeout(questionTimer); questionTimer = null;
+  clearInterval(questionTickInterval);
+  clearTimeout(narratorFallbackTimer); narratorFallbackTimer = null;
+  pendingAnswerWindow = null;
   broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit, roundId });
-  // ⚠️ הערה חשובה: השרת מפעיל כאן מיד את הטיימר האמיתי (questionTimer → revealAnswer),
-  // בלי להמתין לאירוע /narrator-ready. כלומר הטיימר שקובע מתי בפועל תתגלה התשובה
-  // רץ כבר בזמן שהקריין עדיין מקריא את השאלה אצל הלקוח, בעוד שהטיימר הוויזואלי מתחיל
-  // להיספר אצל השחקן רק אחרי שהקריין מסיים (ב-notifyNarratorReady). זה בדיוק פער
-  // הסנכרון שדווח. הלוגים 🕰️ למטה (ב-/narrator-ready וב-revealAnswer) ממחישים בפועל
-  // כמה זמן "אבד" לשחקן בגלל זה.
+  log('🎙️', `שאלה ${currentQuestion + 1}: ממתין ל-narrator-ready (roundId=${roundId}) לפני הפעלת הטיימר האמיתי — fallback אם לא מגיע תוך ${NARRATOR_FALLBACK_MS}ms`);
+
+  // ✅ תיקון סנכרון קריין/טיימר: לא מפעילים יותר את questionTimer/startTimer באופן מיידי.
+  // מחכים לאירוע /narrator-ready (שנשלח ברגע שהקריין מסיים להקריא אצל הלקוח), ורק אז מתחילים
+  // בפועל את חלון התשובה — כך שהטיימר האמיתי בשרת תמיד תואם לטיימר הוויזואלי אצל הלקוח.
+  // יש רשת ביטחון (fallback) כדי שהמשחק לא ייתקע אם אף לקוח לא מדווח (למשל קריין כבוי בכולם
+  // ומשום מה notifyNarratorReady לא הגיע, או תקלת רשת).
+  narratorFallbackTimer = setTimeout(() => {
+    log('⏰', `שאלה ${currentQuestion + 1}: fallback — לא התקבל narrator-ready תוך ${NARRATOR_FALLBACK_MS}ms, מפעילים את חלון התשובה בכל זאת (roundId=${roundId})`);
+    beginAnswerWindow(roundId, timeLimit);
+  }, NARRATOR_FALLBACK_MS);
+}
+
+// beginAnswerWindow — מתחיל בפועל את חלון התשובה (משדר startTimer + מפעיל את הטיימר האמיתי
+// שקובע מתי revealAnswer ירוץ). נקרא או מ-/narrator-ready או מה-fallback, מי שמגיע ראשון.
+// idempotent: לא יפעיל פעמיים לאותו roundId.
+function beginAnswerWindow(roundId, timeLimit) {
+  if (roundId !== questionStartedAt) {
+    log('⚠️', `beginAnswerWindow עם roundId ישן/לא תואם (${roundId}) — השאלה הנוכחית היא ${questionStartedAt}. מתעלם.`);
+    return;
+  }
+  if (answerWindowStartedFor === roundId) {
+    log('🎙️', `beginAnswerWindow — כבר הופעל עבור roundId=${roundId}, מתעלם מקריאה כפולה`);
+    return;
+  }
+  if (gamePaused) {
+    // המשחק מושהה בדיוק ברגע שהקריין/ה-fallback רצו להתחיל — שומרים לביצוע ב-resume
+    log('⏸️', `beginAnswerWindow — המשחק מושהה, שומר בקשה ל-resume (roundId=${roundId})`);
+    pendingAnswerWindow = { roundId, timeLimit };
+    return;
+  }
+  answerWindowStartedFor = roundId;
+  clearTimeout(narratorFallbackTimer); narratorFallbackTimer = null;
   broadcast({ type: 'startTimer', timeLimit, roundId });
   clearTimeout(questionTimer);
   clearInterval(questionTickInterval);
   questionTimer = setTimeout(revealAnswer, timeLimit * 1000);
-  log('⏱️', `שאלה ${currentQuestion + 1}: טיימר שרת אמיתי הופעל עכשיו ל-${timeLimit}ש' (roundId=${roundId}) — גילוי תשובה מתוזמן ל-ts=${roundId + timeLimit * 1000}`);
+  log('⏱️', `שאלה ${currentQuestion + 1}: חלון תשובה הופעל ל-${timeLimit}ש' (roundId=${roundId}) — גילוי תשובה מתוזמן ל-ts=${Date.now() + timeLimit * 1000}`);
   let tl = timeLimit;
   questionTickInterval = setInterval(() => {
     if (gamePaused) {
@@ -477,7 +530,7 @@ function showQuestion() {
 }
 
 function revealAnswer() {
-  clearTimeout(questionTimer);
+  clearTimeout(questionTimer); questionTimer = null;
   clearInterval(questionTickInterval);
   const q = questions[currentQuestion];
   const timeLimit = gameMode === 'speedrun' ? 10 : gameMode === 'blitz' ? 5 : 22;
@@ -488,17 +541,55 @@ function revealAnswer() {
     const stolenMs = timeLimit * 1000 - actualAnswerWindowMs;
     log('🕰️', `סנכרון קריין/טיימר: הקריין סיים אחרי ${narratorReadyAt - questionStartedAt}ms, גילוי תשובה אחרי ${elapsedSinceQuestionStart}ms מתחילת השאלה. לשחקן היה בפועל ${Math.round(actualAnswerWindowMs/1000)}ש' לענות במקום ${timeLimit}ש' (${stolenMs > 0 ? 'נגזלו ' + Math.round(stolenMs/1000) + 'ש' : 'תקין'})`);
   } else {
-    log('🕰️', `סנכרון קריין/טיימר: לא התקבל narrator-ready לשאלה הזו לפני שהתשובה התגלתה (elapsed=${elapsedSinceQuestionStart}ms, timeLimit=${timeLimit}ש') — ייתכן שהקריין עדיין הקריא כשהתשובה התגלתה`);
+    log('🕰️', `סנכרון קריין/טיימר: לא התקבל narrator-ready לשאלה הזו לפני שהתשובה התגלתה (elapsed=${elapsedSinceQuestionStart}ms, timeLimit=${timeLimit}ש') — ייתכן שזה קרה דרך ה-fallback`);
   }
   log('💡', `תשובה: ${q.a[q.correct]}`);
+
+  // roundId חדש לשלב ה-reveal, כדי שהלקוח יוכל לדווח בחזרה מתי הקריין סיים להקריא
+  // את "התשובה הנכונה היא..." (ראו /reveal-narrator-done ו-advanceToNextQuestion).
+  const rRoundId = Date.now();
+  revealRoundId = rRoundId;
+  revealAdvanceStartedFor = null;
+  clearTimeout(revealNarratorFallbackTimer); revealNarratorFallbackTimer = null;
+
   broadcast({
     type: 'reveal',
     correct: gameMode === 'vote' ? -1 : q.correct,
     correctText: q.a[q.correct],
     mode: gameMode,
+    revealRoundId: rRoundId,
     players: Object.values(players).map(p => ({ callId: p.callId, score: p.score, correct: p.correct }))
   });
-  setTimeout(() => { currentQuestion++; showQuestion(); }, 4000);
+
+  // ✅ תיקון: לא עוברים לשאלה הבאה בטיימר קבוע (4 שניות) בלי קשר לקריין, כי לפעמים הקריין
+  // עדיין מקריא "התשובה הנכונה היא..." כשהמסך כבר מתחלף. מחכים לאישור מהלקוח
+  // (/reveal-narrator-done) שהקריין סיים, עם רשת ביטחון (fallback) שלא תיתקע את המשחק.
+  revealNarratorFallbackTimer = setTimeout(() => {
+    log('⏰', `reveal: fallback — לא התקבל reveal-narrator-done תוך ${REVEAL_NARRATOR_FALLBACK_MS}ms, ממשיכים לשאלה הבאה בכל זאת (revealRoundId=${rRoundId})`);
+    advanceToNextQuestion(rRoundId);
+  }, REVEAL_NARRATOR_FALLBACK_MS);
+}
+
+// advanceToNextQuestion — קורא ל-showQuestion לשאלה הבאה. נקרא או מ-/reveal-narrator-done
+// (כשהקריין מדווח שסיים להקריא את התשובה הנכונה) או מה-fallback. idempotent לכל revealRoundId,
+// ומבטיח זמן מינימלי להצגת מסך התשובה גם אם הקריין מסיים מהר במיוחד.
+function advanceToNextQuestion(rRoundId) {
+  if (rRoundId !== revealRoundId) {
+    log('⚠️', `advanceToNextQuestion עם revealRoundId ישן/לא תואם (${rRoundId}) — הנוכחי הוא ${revealRoundId}. מתעלם.`);
+    return;
+  }
+  if (revealAdvanceStartedFor === rRoundId) {
+    log('🎙️', `advanceToNextQuestion — כבר טופל עבור revealRoundId=${rRoundId}, מתעלם מקריאה כפולה`);
+    return;
+  }
+  revealAdvanceStartedFor = rRoundId;
+  clearTimeout(revealNarratorFallbackTimer); revealNarratorFallbackTimer = null;
+  const elapsedSinceReveal = Date.now() - rRoundId;
+  const extraWait = Math.max(0, REVEAL_MIN_DISPLAY_MS - elapsedSinceReveal);
+  if (extraWait > 0) {
+    log('🕰️', `advanceToNextQuestion — הקריין סיים מהר (${elapsedSinceReveal}ms), ממתינים עוד ${extraWait}ms כדי שמסך התשובה יוצג זמן מינימלי`);
+  }
+  setTimeout(() => { currentQuestion++; showQuestion(); }, extraWait);
 }
 
 function endGame() {
@@ -669,6 +760,9 @@ app.get('/room-status', (req, res) => {
 function stopAllTimers() {
   clearTimeout(questionTimer);
   clearInterval(questionTickInterval);
+  clearTimeout(narratorFallbackTimer); narratorFallbackTimer = null;
+  clearTimeout(revealNarratorFallbackTimer); revealNarratorFallbackTimer = null;
+  pendingAnswerWindow = null;
   clearTimeout(reactionTimer);
   clearTimeout(wcTimer);
   clearTimeout(majTimer2);
@@ -727,6 +821,16 @@ app.get('/pause', (req, res) => {
     // RESUME
     gamePaused = false;
     const pauseDurationMs = Date.now() - pauseStartTime;
+    if (pendingAnswerWindow) {
+      // ⏸️ המשחק הושהה בדיוק ברגע שחלון התשובה היה אמור להתחיל (narrator-ready/fallback הגיעו
+      // בזמן ה-pause) — עכשיו, ב-resume, מפעילים אותו בפועל.
+      const pending = pendingAnswerWindow;
+      pendingAnswerWindow = null;
+      log('▶️', `משחק ממשיך — היה מושהה ${Math.round(pauseDurationMs/1000)}ש', מפעיל חלון תשובה שהמתין (roundId=${pending.roundId})`);
+      beginAnswerWindow(pending.roundId, pending.timeLimit);
+      res.send('resumed');
+      return;
+    }
     if (pausedTimeLeft > 0) {
       questionTimer = setTimeout(revealAnswer, pausedTimeLeft);
     }
@@ -1596,20 +1700,34 @@ app.delete('/room-data/:roomId/contacts/:phone', checkRoomAuth, (req, res) => {
 });
 
 
-// /narrator-ready — הלקוח מודיע שהקריין סיים.
-// ⚠️ שימו לב: זה עדיין לא משפיע על הטיימר האמיתי בשרת (questionTimer) — הוא רק נרשם ללוג
-// כדי שאפשר יהיה למדוד את פער הסנכרון (ראו לוג 🕰️ ב-revealAnswer). זה נשאר "רק לוג" כפי
-// שהיה גם קודם, אבל עכשיו לפחות רואים בבירור כמה זמן עבר בין תחילת השאלה לסיום ההקראה,
-// ובהמשך אפשר להחליט אם לגרום ל-questionTimer להתחיל רק מהרגע הזה (זה יהיה תיקון ארכיטקטוני,
-// לא רק לוגים — ראו הסבר בתשובה).
+// /narrator-ready — הלקוח מודיע שהקריין סיים להקריא את השאלה.
+// ✅ תיקון ארכיטקטוני: זה כבר לא "רק לוג" — זה מה שבפועל מפעיל את חלון התשובה בשרת
+// (beginAnswerWindow), כדי שהטיימר האמיתי תמיד יתחיל באותו רגע שהטיימר הוויזואלי מתחיל אצל הלקוח.
 app.post('/narrator-ready', (req, res) => {
   const { roundId } = req.body || {};
   const now = Date.now();
   if (roundId === questionStartedAt) {
     narratorReadyAt = now;
-    log('🎙️', `narrator-ready התקבל לשאלה הנוכחית — ${now - questionStartedAt}ms אחרי תחילת השאלה (roundId=${roundId})`);
+    const timeLimit = gameMode === 'speedrun' ? 10 : gameMode === 'blitz' ? 5 : 22;
+    log('🎙️', `narrator-ready התקבל לשאלה הנוכחית — ${now - questionStartedAt}ms אחרי תחילת השאלה (roundId=${roundId}) → מפעיל חלון תשובה`);
+    beginAnswerWindow(roundId, timeLimit);
   } else {
     log('⚠️', `narrator-ready התקבל עם roundId ישן/לא תואם (${roundId}) — השאלה הנוכחית התחילה ב-${questionStartedAt}. מתעלם.`);
+  }
+  res.json({ ok: true });
+});
+
+// /reveal-narrator-done — הלקוח מודיע שהקריין סיים להקריא את "התשובה הנכונה היא...".
+// זה מה שבפועל גורם למעבר לשאלה הבאה (advanceToNextQuestion), כדי שהמסך לא יתחלף
+// לפני שהקריין סיים לדבר על השאלה הנוכחית.
+app.post('/reveal-narrator-done', (req, res) => {
+  const { revealRoundId: rid } = req.body || {};
+  const now = Date.now();
+  if (rid === revealRoundId) {
+    log('🎙️', `reveal-narrator-done התקבל — ${now - revealRoundId}ms אחרי גילוי התשובה (revealRoundId=${rid}) → ממשיך לשאלה הבאה`);
+    advanceToNextQuestion(rid);
+  } else {
+    log('⚠️', `reveal-narrator-done התקבל עם revealRoundId ישן/לא תואם (${rid}) — הנוכחי הוא ${revealRoundId}. מתעלם.`);
   }
   res.json({ ok: true });
 });

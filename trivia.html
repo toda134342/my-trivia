@@ -3866,8 +3866,24 @@ function handle(d){
           qarea.appendChild(orderDiv);
         }
       }
-      if(d.mode!=='vote') { addFeed('💡','תשובה: '+d.correctText); if(ttsOn) setTimeout(()=>speak('התשובה הנכונה היא: '+d.correctText),300); }
-      else addFeed('📊','תוצאות ההצבעה');
+      if(d.mode!=='vote') {
+        addFeed('💡','תשובה: '+d.correctText);
+        // ✅ תיקון סנכרון: מודיעים לשרת (reveal-narrator-done) רק אחרי שהקריין באמת סיים
+        // להקריא את "התשובה הנכונה היא..." — כדי שהמסך לא יתחלף לשאלה הבאה קודם.
+        // אם אין קריין (ttsOn=false) — מודיעים מיד, בלי המתנה.
+        const notifyRevealDone = () => {
+          ttsLog('reveal → notifying server reveal-narrator-done', { revealRoundId: d.revealRoundId });
+          if (d.revealRoundId != null) {
+            fetch('/reveal-narrator-done', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ revealRoundId: d.revealRoundId }) }).catch(()=>{});
+          }
+        };
+        if (ttsOn) {
+          setTimeout(() => speak('התשובה הנכונה היא: '+d.correctText, 1, 1, notifyRevealDone), 300);
+        } else {
+          notifyRevealDone();
+        }
+      }
+      else { addFeed('📊','תוצאות ההצבעה'); if(d.revealRoundId!=null){ ttsLog('reveal(vote) → notifying server reveal-narrator-done immediately', { revealRoundId: d.revealRoundId }); fetch('/reveal-narrator-done',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revealRoundId:d.revealRoundId})}).catch(()=>{}); } }
       if(d.mode==='flashback' && d.year){ const yt=document.getElementById('q-topic'); if(yt) yt.textContent='📅 שנה: '+d.year; }
       Object.values(players).forEach(p=>{
         if(!p.answered) return;
@@ -4501,22 +4517,35 @@ function updateStatus(){
 
 // ========== TIMER ==========
 function startTimer(sec){
-  ttsLog('startTimer', { sec, narratorDimVisible: document.getElementById('narrator-dim-overlay')?.style?.display !== 'none' });
+  const fillEl0=document.getElementById('tfill'), numEl0=document.getElementById('tnum');
+  ttsLog('startTimer CALLED', { sec, hadPreviousInterval: !!timerInt, tfillFound: !!fillEl0, tnumFound: !!numEl0 });
   stopTimer();
   let el=0;
   const fill=()=>document.getElementById('tfill');
   const num=()=>document.getElementById('tnum');
+  if(!fill() || !num()){
+    // 🩹 לוג מורחב: אם אלמנטי הטיימר לא נמצאים בדום כרגע (למשל המסך עדיין לא סיים להיטען,
+    // או שהוחלף בינתיים ל-screen אחר), הטיימר "רץ" בזיכרון (ה-interval פעיל) אבל שום דבר
+    // לא מתעדכן ויזואלית — זו בדיוק התופעה "הטיימר רץ אבל במסך לא רואים שהוא רץ".
+    ttsLog('startTimer WARNING — tfill/tnum not found in DOM right now, visual updates will be skipped until they appear', { sec });
+  }
   if(fill()){fill().style.transition='none';fill().style.width='100%';fill().classList.remove('warn');}
+  if(num()) num().textContent=sec;
   timerInt=setInterval(()=>{
     el++;
     const pct=Math.max(0,100-(el/sec)*100),rem=Math.max(0,sec-el);
-    if(fill()){fill().style.transition='1s linear';fill().style.width=pct+'%';if(pct<30)fill().classList.add('warn');}
-    if(num()) num().textContent=rem;
+    const f=fill(), n=num();
+    if(f){f.style.transition='1s linear';f.style.width=pct+'%';if(pct<30)f.classList.add('warn');}
+    else if(el===1) ttsLog('startTimer TICK — #tfill missing, bar will not visually move', { el, sec });
+    if(n) n.textContent=rem;
+    else if(el===1) ttsLog('startTimer TICK — #tnum missing, number will not visually update', { el, sec });
     if(rem<=5&&rem>0) sfx.tick();
-    if(el>=sec) stopTimer();
+    if(el>=sec){ ttsLog('startTimer FINISHED naturally', { sec }); stopTimer(); }
   },1000);
 }
-function stopTimer(){if(timerInt){clearInterval(timerInt);timerInt=null;}}
+function stopTimer(){
+  if(timerInt){ ttsLog('stopTimer — clearing active interval'); clearInterval(timerInt);timerInt=null; }
+}
 
 // ========== CATEGORY CHIPS ==========
 // Static fallback labels/icons for known topics
@@ -5264,9 +5293,10 @@ function speakEdge(text, voiceId, speed) {
 }
 
 // speak() — קריאה כללית (הכרזות, קטגוריות, welcome) — לא דורסת ספירה
-function speak(text, rate, pitch) {
-  if (!ttsOn || window._ttsBlocked || countdownActive) return;
-  _ttsPlay(text||'', TTS_PRI.LOW, null);
+// onDone (אופציונלי) — callback שנקרא כשההקראה הסתיימה (או מיד אם אין קריין/הטקסט ריק)
+function speak(text, rate, pitch, onDone) {
+  if (!ttsOn || window._ttsBlocked || countdownActive) { onDone && onDone(); return; }
+  _ttsPlay(text||'', TTS_PRI.LOW, onDone||null);
 }
 
 function toggleTTS() {
@@ -5315,14 +5345,16 @@ function hideNarratorDim() {
 function speakQuestion(question, answers) { /* dead — kept for safety, never called */ }
 
 // ===== סנכרון טיימר עם השרת =====
-// במקום להתחיל את הטיימר הוויזואלי מקומית ברגע שהקריין מסיים, מודיעים לשרת "מוכן" —
-// והשרת הוא זה שמשדר לכולם 'startTimer' באותו רגע בדיוק, כדי שכל המסכים יתחילו יחד.
+// ✅ תיקון ארכיטקטוני: ה-POST הזה כבר לא רק לוג — הוא בפועל מפעיל בשרת את "חלון התשובה"
+// (questionTimer האמיתי שקובע מתי revealAnswer ירוץ), כדי שהוא תמיד יתחיל באותו רגע
+// שהטיימר הוויזואלי מתחיל אצל הלקוח. ראו beginAnswerWindow ב-server.js.
 function notifyNarratorReady(roundId, tl) {
-  ttsLog('notifyNarratorReady → startTimer locally', { roundId, tl });
-  // הטיימר הויזואלי מתחיל מקומית — השרת מנהל את timeout ה-revealAnswer שלו בנפרד
+  ttsLog('notifyNarratorReady → startTimer locally + telling server to start real timer', { roundId, tl });
+  // הטיימר הויזואלי מתחיל מקומית, באותו רגע שבו השרת מקבל את ה-POST ומתחיל את הטיימר האמיתי שלו
   startTimer(tl);
-  // POST לשרת לצורך לוג בלבד
-  fetch('/narrator-ready', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roundId }) }).catch(() => {});
+  fetch('/narrator-ready', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roundId }) }).catch((err) => {
+    ttsLog('notifyNarratorReady → POST failed (server fallback timer will kick in)', { roundId, err: String(err) });
+  });
 }
 
 function speakQuestionThenStart(question, answers, timeLimit, roundId) {
@@ -5339,20 +5371,15 @@ function speakQuestionThenStart(question, answers, timeLimit, roundId) {
 
   if (!fullText.trim()) { notifyNarratorReady(roundId, tl); return; }
 
-  // יש קריין פעיל — הטיימר לא מתחיל עד שהקריין מסיים לדבר (onEnd/done).
-  // מציגים dim ("הקשיבו לשאלה...") מיד עם תחילת הניגון, ומודיעים לשרת רק כשהוא מסתיים.
-  let dimShown = false;
-  const dimTimer = setTimeout(() => {
-    // רק אם השמע באמת התחיל לנגן (לא רק "ניסינו") נציג dim — אחרת זה ירגיש כאילו המסך קפא
-    if (_edgeAudio && !_edgeAudio.paused) { showNarratorDim(); dimShown = true; }
-  }, 600);
+  // ✅ תיקון: אין יותר מסך "הקשיבו לשאלה..." חוסם — השאלה כבר מוצגת על המסך (renderQuestion
+  // נקרא לפני הקריאה לפונקציה הזו) והקריין מתחיל לדבר עליה מיד, במקביל, בלי מסך המתנה נפרד.
+  // הטיימר הוויזואלי עדיין לא מתחיל עד שהקריין מסיים (onEnd/done) — זה בכוונה, כדי לתת
+  // לשחקנים את מלוא הזמן לענות אחרי ששמעו את השאלה.
 
   let timerStarted = false;
   const onDone = () => {
-    ttsLog('speakQuestionThenStart → onDone → notifyNarratorReady + hideNarratorDim', { tl, roundId });
+    ttsLog('speakQuestionThenStart → onDone → notifyNarratorReady', { tl, roundId });
     _ttsNarratorDone = null;
-    clearTimeout(dimTimer);
-    if (dimShown) hideNarratorDim();
     if (!timerStarted) { timerStarted = true; notifyNarratorReady(roundId, tl); }
   };
   _ttsNarratorDone = onDone;
