@@ -836,6 +836,7 @@ let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
 
 // הורדת המודל בעלייה (אם עוד לא קיים) — wget ישירות מ-HuggingFace
 const HF_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/he/he_IL/local/high';
+const HF_SUFFIX = '?download=true';
 async function ensurePiperVoice() {
   const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
   const jsonPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx.json');
@@ -846,32 +847,33 @@ async function ensurePiperVoice() {
   }
   fs.mkdirSync(VOICE_DIR, { recursive: true });
 
-  const download = (url, dest) => new Promise((resolve, reject) => {
-    log('⬇️', `Piper: מוריד ${url.split('/').pop()}...`);
-    const https = require('https');
+  const download = (url, dest, _redirects = 0) => new Promise((resolve, reject) => {
+    if (_redirects > 5) return reject(new Error('יותר מדי redirects'));
+    log('⬇️', `Piper: מוריד ${url.split('?')[0].split('/').pop()}...`);
+    const proto = url.startsWith('https') ? require('https') : require('http');
     const file  = fs.createWriteStream(dest);
-    const req = https.get(url, { timeout: 120000 }, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
+    const req = proto.get(url, { timeout: 120000 }, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
         file.close();
         fs.unlink(dest, () => {});
-        return download(res.headers.location, dest).then(resolve).catch(reject);
+        return download(res.headers.location, dest, _redirects + 1).then(resolve).catch(reject);
       }
       if (res.statusCode !== 200) {
         file.close();
         fs.unlink(dest, () => {});
-        return reject(new Error(`HTTP ${res.statusCode} עבור ${url}`));
+        return reject(new Error(`HTTP ${res.statusCode} עבור ${url.slice(0, 80)}`));
       }
       res.pipe(file);
       file.on('finish', () => file.close(resolve));
       file.on('error', (e) => { fs.unlink(dest, () => {}); reject(e); });
     });
     req.on('error', (e) => { fs.unlink(dest, () => {}); reject(e); });
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout בהורדה')); });
   });
 
   try {
-    await download(`${HF_BASE}/${VOICE_NAME}.onnx`, onnxPath);
-    await download(`${HF_BASE}/${VOICE_NAME}.onnx.json`, jsonPath);
+    await download(`${HF_BASE}/${VOICE_NAME}.onnx${HF_SUFFIX}`, onnxPath);
+    await download(`${HF_BASE}/${VOICE_NAME}.onnx.json${HF_SUFFIX}`, jsonPath);
     log('✅', `Piper: מודל הורד → ${onnxPath}`);
     PIPER_MODEL = onnxPath;
   } catch (e) {
