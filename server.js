@@ -829,26 +829,38 @@ app.get('/', (req, res) => {
 const { execFile, spawn } = require('child_process');
 const os = require('os');
 
-// נמצא את python3 של ה-venv — נסה כמה נתיבים
+// מציאת Python עם piper-tts מותקן
 const { execSync } = require('child_process');
-let PIPER_BIN = 'python3'; // ברירת מחדל
 const PIPER_ARGS_PREFIX = ['-m', 'piper'];
-try {
-  // נסה למצוא python ב-venv
+let PIPER_BIN = 'python3';
+
+// חיפוש python שיש בו piper — מוגדר בעלייה ב-ensurePiperVoice
+let _piperBinDetected = false;
+function detectPiperBin() {
+  if (_piperBinDetected) return;
+  _piperBinDetected = true;
   const candidates = [
+    '/opt/piper-env/bin/python3.11',
     '/opt/piper-env/bin/python3',
     '/opt/piper-env/bin/python',
     '/usr/local/bin/python3',
-    'python3',
+    '/usr/bin/python3',
   ];
   for (const c of candidates) {
     try {
-      execSync(`${c} -m piper --help`, { stdio: 'pipe', timeout: 5000 });
+      const r = execSync(`${c} -c "import piper; print('ok')"`, { stdio: 'pipe', timeout: 5000 });
       PIPER_BIN = c;
-      break;
-    } catch {}
+      log('✅', `Piper: Python נמצא: ${c}`);
+      return;
+    } catch(e) {}
   }
-} catch {}
+  // fallback: מצא כל python שיש בו piper
+  try {
+    const which = execSync('find /opt/piper-env /usr/local /usr -name "python*" -type f 2>/dev/null | head -5', { stdio: 'pipe', timeout: 3000 }).toString().trim();
+    log('🔍', `Piper: Python candidates: ${which}`);
+  } catch {}
+  log('⚠️', 'Piper: לא נמצא Python עם piper — משתמש ב-python3');
+}
 const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
 const VOICE_NAME = 'en_US-lessac-medium';
 let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
@@ -857,6 +869,7 @@ let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
 const HF_BASE = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium';
 const HF_SUFFIX = '?download=true';
 async function ensurePiperVoice() {
+  detectPiperBin();
   const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
   const jsonPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx.json');
   if (fs.existsSync(onnxPath) && fs.existsSync(jsonPath)) {
@@ -959,6 +972,7 @@ function fetchTTSOnce(text, voiceKey, speed) {
 }
 
 function _fetchTTSOnceRaw(text, voiceKey, speed) {
+  detectPiperBin();
   return new Promise((resolve, reject) => {
     const profile = EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri'];
     const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.wav`);
