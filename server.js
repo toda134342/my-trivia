@@ -895,10 +895,10 @@ function detectPiperBin() {
 
 
 const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
-const VOICE_NAME = 'en_US-lessac-medium';
+const VOICE_NAME = 'en_US-lessac-low';
 let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
 
-const HF_BASE   = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium';
+const HF_BASE   = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/low';
 const HF_SUFFIX = '?download=true';
 
 async function ensurePiperVoice() {
@@ -1012,7 +1012,7 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
     ];
     if (_piperEspeakData) piperArgs.push('--espeak_data', _piperEspeakData);
 
-    const proc = spawn(PIPER_BIN, [...PIPER_ARGS_PREFIX, ...piperArgs], { timeout: 15000 });
+    const proc = spawn(PIPER_BIN, [...PIPER_ARGS_PREFIX, ...piperArgs], { timeout: 30000 });
 
     let errBuf = '';
     proc.stderr.on('data', d => { errBuf += d.toString(); });
