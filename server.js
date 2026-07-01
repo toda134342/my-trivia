@@ -829,8 +829,26 @@ app.get('/', (req, res) => {
 const { execFile, spawn } = require('child_process');
 const os = require('os');
 
-const PIPER_BIN  = '/opt/piper-env/bin/python3';
+// נמצא את python3 של ה-venv — נסה כמה נתיבים
+const { execSync } = require('child_process');
+let PIPER_BIN = 'python3'; // ברירת מחדל
 const PIPER_ARGS_PREFIX = ['-m', 'piper'];
+try {
+  // נסה למצוא python ב-venv
+  const candidates = [
+    '/opt/piper-env/bin/python3',
+    '/opt/piper-env/bin/python',
+    '/usr/local/bin/python3',
+    'python3',
+  ];
+  for (const c of candidates) {
+    try {
+      execSync(`${c} -m piper --help`, { stdio: 'pipe', timeout: 5000 });
+      PIPER_BIN = c;
+      break;
+    } catch {}
+  }
+} catch {}
 const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
 const VOICE_NAME = 'en_US-lessac-medium';
 let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
@@ -857,7 +875,15 @@ async function ensurePiperVoice() {
       if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
         file.close();
         fs.unlink(dest, () => {});
-        return download(res.headers.location, dest, _redirects + 1).then(resolve).catch(reject);
+        let loc = res.headers.location;
+        // תיקון URL מקודד ל-URL תקני
+        try { loc = decodeURIComponent(loc); } catch {}
+        // אם ה-location הוא path יחסי, הרכב URL מלא
+        if (loc && !loc.startsWith('http')) {
+          const base = new URL(url);
+          loc = base.origin + loc;
+        }
+        return download(loc, dest, _redirects + 1).then(resolve).catch(reject);
       }
       if (res.statusCode !== 200) {
         file.close();
