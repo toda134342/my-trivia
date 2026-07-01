@@ -837,20 +837,27 @@ const { execFile, spawn } = require('child_process');
 const { execSync } = require('child_process');
 const os = require('os');
 
-// ===== קולות גבריים — espeak-ng parameters =====
-// -v he — עברית
-// -p (pitch 0-99, default 50) — ירידה = קול גברי נמוך יותר
-// -s (speed wpm, default 175) — מהירות
-// -a (amplitude 0-200, default 100)
+// ===== קולות — edge-tts (Microsoft Edge Neural TTS, קולות עבריים אמיתיים) =====
+// voice — שם הקול הנוירוני האמיתי אצל מיקרוסופט
+// rate  — שינוי מהירות יחסי, לדוגמה '+15%' / '-10%'
+// pitch — שינוי גובה יחסי, לדוגמה '+5Hz' / '-15Hz'
 const EDGE_VOICES = {
-  'edge:avri':        { label: '👨 אברי — קריין רגיל',       pitch: 42, speed: 165, amp: 120 },
-  'edge:avri-deep':   { label: '🎤 ד"ר — קריין עמוק ונמוך',  pitch: 28, speed: 150, amp: 130 },
-  'edge:avri-fast':   { label: '⚡ ספרינטר — קריין מהיר',    pitch: 45, speed: 210, amp: 120 },
-  'edge:avri-warm':   { label: '🎙️ חבר — קריין חם ונעים',    pitch: 38, speed: 160, amp: 115 },
-  'edge:hila':           { label: '👩 הילה — קריינית רגילה',   pitch: 65, speed: 170, amp: 115 },
-  'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',    pitch: 60, speed: 158, amp: 110 },
-  'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', pitch: 70, speed: 210, amp: 125 },
+  'edge:avri':           { label: '👨 אברי — קריין רגיל',        voice: 'he-IL-AvriNeural', rate: '+0%',  pitch: '+0Hz'  },
+  'edge:avri-deep':      { label: '🎤 ד"ר — קריין עמוק ונמוך',   voice: 'he-IL-AvriNeural', rate: '-10%', pitch: '-25Hz' },
+  'edge:avri-fast':      { label: '⚡ ספרינטר — קריין מהיר',     voice: 'he-IL-AvriNeural', rate: '+30%', pitch: '+0Hz'  },
+  'edge:avri-warm':      { label: '🎙️ חבר — קריין חם ונעים',    voice: 'he-IL-AvriNeural', rate: '-8%',  pitch: '-8Hz'  },
+  'edge:hila':           { label: '👩 הילה — קריינית רגילה',    voice: 'he-IL-HilaNeural', rate: '+0%',  pitch: '+0Hz'  },
+  'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',     voice: 'he-IL-HilaNeural', rate: '-8%',  pitch: '-8Hz'  },
+  'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', voice: 'he-IL-HilaNeural', rate: '+25%', pitch: '+15Hz' },
 };
+
+// המרת מקדם speed (0.5–2.0, כפי שמגיע מהלקוח) להפרש אחוזים יחסי לפרופיל
+function _speedFactorToRateOffset(baseRatePct, speedFactor) {
+  const base = parseInt(String(baseRatePct).replace('%','')) || 0;
+  const extra = Math.round((speedFactor - 1.0) * 100);
+  const total = base + extra;
+  return (total >= 0 ? '+' : '') + total + '%';
+}
 
 // ===== Cache + תור =====
 const _ttsCache = new Map();
@@ -882,28 +889,65 @@ function fetchTTSOnce(text, voiceKey, speed) {
   return _ttsRunQueued(() => _fetchTTSOnceRaw(text, voiceKey, speed));
 }
 
-function _fetchTTSOnceRaw(text, voiceKey, speed) {
+// ===== מנוע ראשי: edge-tts (Microsoft Edge Neural, קול אמיתי, דורש רשת) =====
+function _fetchEdgeTTS(text, profile, speed) {
   return new Promise((resolve, reject) => {
-    const profile = EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri'];
-    const tmpFile = path.join(os.tmpdir(), 'tts_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.wav');
-
-    // espeak-ng: -v he (עברית), pitch/speed/amp מהפרופיל, פלט WAV לקובץ
-    const rateAdj   = Math.round(profile.speed * (speed || 1.0));
+    const tmpFile = path.join(os.tmpdir(), 'tts_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.mp3');
+    const rate = _speedFactorToRateOffset(profile.rate, speed || 1.0);
     const args = [
-      '-v', 'he',
-      '-p', String(profile.pitch),
-      '-s', String(rateAdj),
-      '-a', String(profile.amp),
-      '-w', tmpFile,
-      '--',            // מפריד בין flags לטקסט
-      text
+      '--voice', profile.voice,
+      '--rate', rate,
+      '--pitch', profile.pitch,
+      '--text', text,
+      '--write-media', tmpFile,
     ];
-    log('🎤', 'espeak-ng: ' + text.slice(0,40) + ' [pitch=' + profile.pitch + ' speed=' + rateAdj + ']');
+    log('🎤', 'edge-tts: ' + text.slice(0,40) + ' [voice=' + profile.voice + ' rate=' + rate + ' pitch=' + profile.pitch + ']');
+
+    const proc = spawn('edge-tts', args, { timeout: 15000 });
+    let errBuf = '';
+    proc.stderr.on('data', d => { errBuf += d.toString(); });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        fs.unlink(tmpFile, () => {});
+        return reject(new Error('edge-tts קוד ' + code + ': ' + errBuf.trim().slice(0, 150)));
+      }
+      fs.readFile(tmpFile, (readErr, data) => {
+        fs.unlink(tmpFile, () => {});
+        if (readErr) return reject(readErr);
+        if (!data || data.length === 0) return reject(new Error('edge-tts החזיר קובץ ריק'));
+        resolve({ data, mime: 'audio/mpeg' });
+      });
+    });
+    proc.on('error', (err) => {
+      fs.unlink(tmpFile, () => {});
+      reject(new Error('edge-tts שגיאת תהליך: ' + err.message));
+    });
+  });
+}
+
+// ===== מנוע גיבוי: espeak-ng (מקומי, ללא רשת, איכות נמוכה יותר) — רק אם edge-tts נכשל =====
+// ממפה כל פרופיל edge: לפרמטרים גסים תואמים ל-espeak-ng, כדי לשמור על אופי הקול (גברי/נשי, מהיר/איטי)
+const _ESPEAK_FALLBACK_PARAMS = {
+  'edge:avri':           { pitch: 42, amp: 120 },
+  'edge:avri-deep':      { pitch: 28, amp: 130 },
+  'edge:avri-fast':      { pitch: 45, amp: 120 },
+  'edge:avri-warm':      { pitch: 38, amp: 115 },
+  'edge:hila':           { pitch: 65, amp: 115 },
+  'edge:hila-warm':      { pitch: 60, amp: 110 },
+  'edge:hila-energetic': { pitch: 70, amp: 125 },
+};
+function _fetchEspeakFallback(text, voiceKey, speed) {
+  return new Promise((resolve, reject) => {
+    const params = _ESPEAK_FALLBACK_PARAMS[voiceKey] || _ESPEAK_FALLBACK_PARAMS['edge:avri'];
+    const tmpFile = path.join(os.tmpdir(), 'tts_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.wav');
+    const rateAdj = Math.round(165 * (speed || 1.0));
+    const args = ['-v', 'he', '-p', String(params.pitch), '-s', String(rateAdj), '-a', String(params.amp), '-w', tmpFile, '--', text];
+    log('🔇', 'espeak-ng (גיבוי): ' + text.slice(0,40));
 
     const proc = spawn('espeak-ng', args, { timeout: 15000 });
     let errBuf = '';
     proc.stderr.on('data', d => { errBuf += d.toString(); });
-
     proc.on('close', (code) => {
       if (code !== 0) {
         fs.unlink(tmpFile, () => {});
@@ -913,7 +957,7 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
         fs.unlink(tmpFile, () => {});
         if (readErr) return reject(readErr);
         if (!data || data.length === 0) return reject(new Error('espeak-ng החזיר קובץ ריק'));
-        resolve(data);
+        resolve({ data, mime: 'audio/wav' });
       });
     });
     proc.on('error', (err) => {
@@ -921,6 +965,16 @@ function _fetchTTSOnceRaw(text, voiceKey, speed) {
       reject(new Error('espeak-ng שגיאת תהליך: ' + err.message));
     });
   });
+}
+
+async function _fetchTTSOnceRaw(text, voiceKey, speed) {
+  const profile = EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri'];
+  try {
+    return await _fetchEdgeTTS(text, profile, speed);
+  } catch (err) {
+    log('⚠️', 'edge-tts נכשל, עובר לגיבוי espeak-ng: ' + err.message.slice(0, 150));
+    return await _fetchEspeakFallback(text, voiceKey, speed);
+  }
 }
 
 
@@ -953,13 +1007,13 @@ async function fetchTTS(text, voiceKey, speed = 1.0) {
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const data = await fetchTTSOnce(text, voiceKey, speed);
+      const result = await fetchTTSOnce(text, voiceKey, speed);
       if (_ttsCache.size >= TTS_CACHE_MAX) _ttsCache.delete(_ttsCache.keys().next().value);
-      _ttsCache.set(cacheKey, data);
-      return data;
+      _ttsCache.set(cacheKey, result);
+      return result;
     } catch (err) {
       lastErr = err;
-      logTtsError('⚠️', `Piper TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
+      logTtsError('⚠️', `TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
       if (attempt < 3) await new Promise(r => setTimeout(r, 400 * attempt));
     }
   }
@@ -972,12 +1026,12 @@ app.get('/tts', async (req, res) => {
   const speed = Math.min(2.0, Math.max(0.5, parseFloat(req.query.speed) || 1.0));
   if (!text) return res.status(400).send('missing text');
   try {
-    const buffer = await fetchTTS(text, key, speed);
-    res.setHeader('Content-Type', 'audio/wav');
+    const { data, mime } = await fetchTTS(text, key, speed);
+    res.setHeader('Content-Type', mime || 'audio/mpeg');
     res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.end(buffer);
+    res.end(data);
   } catch (err) {
-    logTtsError('🛑', `Piper TTS נכשל סופית [${key}] "${text.slice(0,30)}": ${err.message}`);
+    logTtsError('🛑', `TTS נכשל סופית [${key}] "${text.slice(0,30)}": ${err.message}`);
     res.status(503).json({ error: 'שירות הקריינות לא זמין כרגע, נסה שוב' });
   }
 });
@@ -1512,12 +1566,12 @@ app.post('/narrator-ready', (req, res) => {
 app.listen(PORT, async () => {
   log('🚀', `שרת רץ על פורט ${PORT}`);
   loadNames();
-  // הורדת מודל Piper בפעם הראשונה (אם לא קיים) + בדיקת תקינות
-  // בדיקת espeak-ng עברית בעלייה
-  fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(buf => {
-    log('✅', 'espeak-ng TTS: ניגון לדוגמה הצליח (' + buf.length + ' בתים)');
+  // בדיקת TTS בעלייה: edge-tts (רשת, קול נוירוני) עם נפילה חזרה ל-espeak-ng (מקומי) אם הרשת חסומה
+  fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(({ data, mime }) => {
+    const engine = mime === 'audio/mpeg' ? 'edge-tts (נוירוני)' : 'espeak-ng (גיבוי מקומי)';
+    log('✅', `TTS: ניגון לדוגמה הצליח דרך ${engine} (${data.length} בתים)`);
   }).catch(e => {
-    log('🔇', 'espeak-ng TTS: ניגון לדוגמה נכשל — ' + e.message.slice(0,200));
+    log('🔇', 'TTS: ניגון לדוגמה נכשל בשני המנועים — ' + e.message.slice(0,200));
   });
 });
 
