@@ -14,6 +14,8 @@ COPY trivia.html .
 COPY questions.json .
 
 RUN npm init -y && npm install express yemot-router2
+# cache-bust: espeak-ng-only build v2
+RUN espeak-ng --version && espeak-ng -v he 'בדיקה' -w /tmp/test.wav && echo 'espeak-ng Hebrew OK'
 
 EXPOSE 8080
 CMD ["node", "server.js"]

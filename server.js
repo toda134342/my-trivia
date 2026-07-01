@@ -846,129 +846,33 @@ app.get('/', (req, res) => {
   else res.status(404).send('not found');
 });
 
-// ========== Piper TTS — מנוע קול מקומי ==========
-// piper-tts מותקן דרך pip → binary נמצא ב-/usr/local/bin/piper
-// espeak-ng מותקן דרך apt → נתיב הנתונים נמצא דינמית
+// ========== TTS — espeak-ng עברית מקומית ==========
+// espeak-ng מותקן ב-apt, תומך עברית, רץ לחלוטין מקומית ללא רשת.
+// מייצר WAV ל-stdout ישירות.
 
 const { execFile, spawn } = require('child_process');
 const { execSync } = require('child_process');
 const os = require('os');
 
-// ===== גילוי נתיב Piper binary ו-espeak-ng-data =====
-let PIPER_BIN = '/usr/local/bin/piper';
-const PIPER_ARGS_PREFIX = [];  // binary ישיר, ללא python -m prefix
-let _piperEspeakData = null;
-let _piperBinDetected = false;
-
-function detectPiperBin() {
-  if (_piperBinDetected) return;
-  _piperBinDetected = true;
-
-  // מצא piper binary
-  const binCandidates = ['/usr/local/bin/piper', '/usr/bin/piper'];
-  for (const c of binCandidates) {
-    try { fs.accessSync(c, fs.constants.X_OK); PIPER_BIN = c; break; } catch {}
-  }
-  log('🔍', `Piper binary: ${PIPER_BIN}`);
-
-  // מצא espeak-ng-data — קודם נתיבי apt, אחר כך pip
-  const espeakCandidates = [
-    '/usr/lib/x86_64-linux-gnu/espeak-ng-data',
-    '/usr/lib/aarch64-linux-gnu/espeak-ng-data',
-    '/usr/lib/arm-linux-gnueabihf/espeak-ng-data',
-    '/usr/share/espeak-ng-data',
-    '/usr/local/lib/python3.12/dist-packages/piper/espeak-ng-data',
-    '/usr/local/lib/python3.11/dist-packages/piper/espeak-ng-data',
-    '/usr/local/lib/python3.10/dist-packages/piper/espeak-ng-data',
-  ];
-  for (const p of espeakCandidates) {
-    try { fs.accessSync(p); _piperEspeakData = p; break; } catch {}
-  }
-  if (!_piperEspeakData) {
-    try {
-      const found = execSync('find /usr/lib /usr/share /usr/local/lib -name "espeak-ng-data" -type d 2>/dev/null | head -1', { stdio: 'pipe', timeout: 3000 }).toString().trim();
-      if (found) _piperEspeakData = found;
-    } catch {}
-  }
-  log('🔍', `espeak-ng-data: ${_piperEspeakData || '(לא נמצא — Piper ינסה בלעדיו)'}`);
-}
-
-
-const VOICE_DIR  = process.env.PIPER_VOICE_DIR || '/app/data/piper-voices';
-const VOICE_NAME = 'en_US-lessac-low';
-let   PIPER_MODEL = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
-
-const HF_BASE   = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/low';
-const HF_SUFFIX = '?download=true';
-
-async function ensurePiperVoice() {
-  detectPiperBin();
-  const onnxPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx');
-  const jsonPath = path.join(VOICE_DIR, VOICE_NAME + '.onnx.json');
-  if (fs.existsSync(onnxPath) && fs.existsSync(jsonPath)) {
-    log('✅', `Piper: מודל קיים: ${onnxPath}`);
-    PIPER_MODEL = onnxPath; return;
-  }
-  fs.mkdirSync(VOICE_DIR, { recursive: true });
-
-  const download = (url, dest, _hops) => new Promise((resolve, reject) => {
-    _hops = _hops || 0;
-    if (_hops > 8) return reject(new Error('יותר מדי redirects'));
-    log('⬇️', 'Piper: מוריד ' + url.split('?')[0].split('/').pop() + '...');
-    const proto = url.startsWith('https') ? require('https') : require('http');
-    const file  = fs.createWriteStream(dest);
-    const req   = proto.get(url, { timeout: 120000 }, function(res) {
-      if ([301,302,307,308].includes(res.statusCode)) {
-        file.close(); fs.unlink(dest, function(){});
-        let loc = res.headers.location || '';
-        try { loc = decodeURIComponent(loc); } catch(e) {}
-        if (loc && !loc.startsWith('http')) { const b = new URL(url); loc = b.origin + loc; }
-        return download(loc, dest, _hops + 1).then(resolve).catch(reject);
-      }
-      if (res.statusCode !== 200) {
-        file.close(); fs.unlink(dest, function(){});
-        return reject(new Error('HTTP ' + res.statusCode + ' עבור ' + url.slice(0,80)));
-      }
-      res.pipe(file);
-      file.on('finish', function() { file.close(resolve); });
-      file.on('error', function(e) { fs.unlink(dest, function(){}); reject(e); });
-    });
-    req.on('error', function(e) { fs.unlink(dest, function(){}); reject(e); });
-    req.on('timeout', function() { req.destroy(); reject(new Error('timeout בהורדה')); });
-  });
-
-  try {
-    await download(HF_BASE + '/' + VOICE_NAME + '.onnx' + HF_SUFFIX, onnxPath);
-    await download(HF_BASE + '/' + VOICE_NAME + '.onnx.json' + HF_SUFFIX, jsonPath);
-    log('✅', 'Piper: מודל הורד → ' + onnxPath);
-    PIPER_MODEL = onnxPath;
-  } catch (e) {
-    log('🔇', 'Piper: הורדת מודל נכשלה — ' + e.message);
-  }
-}
-
-// ===== פרופילי קולות גבריים =====
-// Piper עצמו מייצר קול אחד, אנחנו נותנים "אישיות" שונה דרך עיבוד Sox (rate/pitch/reverb).
-// כל הקולות גבריים ותוססים כפי שביקשת.
+// ===== קולות גבריים — espeak-ng parameters =====
+// -v he — עברית
+// -p (pitch 0-99, default 50) — ירידה = קול גברי נמוך יותר
+// -s (speed wpm, default 175) — מהירות
+// -a (amplitude 0-200, default 100)
 const EDGE_VOICES = {
-  // --- גבריים ---
-  'edge:avri':        { label: '👨 אברי — קריין רגיל',       rate: 1.0,  pitch: 0   },
-  'edge:avri-deep':   { label: '🎤 ד"ר — קריין עמוק ונמוך',  rate: 0.92, pitch: -3  },
-  'edge:avri-fast':   { label: '⚡ ספרינטר — קריין מהיר',    rate: 1.25, pitch: 1   },
-  'edge:avri-warm':   { label: '🎙️ חבר — קריין חם ונעים',    rate: 0.97, pitch: -1  },
-  // --- נשיים (נשמרים לתאימות לאחור אם מישהו בחר אותם בעבר) ---
-  'edge:hila':           { label: '👩 הילה — קריינית רגילה',   rate: 1.0,  pitch: 3   },
-  'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',    rate: 0.95, pitch: 2   },
-  'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', rate: 1.2,  pitch: 4   },
+  'edge:avri':        { label: '👨 אברי — קריין רגיל',       pitch: 42, speed: 165, amp: 120 },
+  'edge:avri-deep':   { label: '🎤 ד"ר — קריין עמוק ונמוך',  pitch: 28, speed: 150, amp: 130 },
+  'edge:avri-fast':   { label: '⚡ ספרינטר — קריין מהיר',    pitch: 45, speed: 210, amp: 120 },
+  'edge:avri-warm':   { label: '🎙️ חבר — קריין חם ונעים',    pitch: 38, speed: 160, amp: 115 },
+  'edge:hila':           { label: '👩 הילה — קריינית רגילה',   pitch: 65, speed: 170, amp: 115 },
+  'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',    pitch: 60, speed: 158, amp: 110 },
+  'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', pitch: 70, speed: 210, amp: 125 },
 };
 
-// Cache in-memory — מונע עיכוב בטקסטים חוזרים
+// ===== Cache + תור =====
 const _ttsCache = new Map();
 const TTS_CACHE_MAX = 200;
-
-// ===== הגבלת מקביליות — Piper מאוד יעיל אבל נגביל ל-2 תהליכים מקבילים כדי לא להעמיס את ה-CPU =====
-// תור פשוט שמריץ לכל היותר MAX_CONCURRENT_TTS תהליכי Piper במקביל; השאר ממתינים בתור
-const MAX_CONCURRENT_TTS = 2;
+const MAX_CONCURRENT_TTS = 3;
 let _ttsActiveCount = 0;
 const _ttsWaitQueue = [];
 
@@ -985,11 +889,9 @@ function _ttsRunQueued(fn) {
     else _ttsWaitQueue.push(task);
   });
 }
-
 function _ttsDrainQueue() {
   while (_ttsActiveCount < MAX_CONCURRENT_TTS && _ttsWaitQueue.length) {
-    const next = _ttsWaitQueue.shift();
-    next();
+    _ttsWaitQueue.shift()();
   }
 }
 
@@ -998,47 +900,44 @@ function fetchTTSOnce(text, voiceKey, speed) {
 }
 
 function _fetchTTSOnceRaw(text, voiceKey, speed) {
-  detectPiperBin();
   return new Promise((resolve, reject) => {
     const profile = EDGE_VOICES[voiceKey] || EDGE_VOICES['edge:avri'];
-    const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).slice(2)}.wav`);
+    const tmpFile = path.join(os.tmpdir(), 'tts_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.wav');
 
-    // Piper מקבל טקסט מ-stdin ומייצר WAV לקובץ
-    const finalRate = (profile.rate || 1.0) * (speed || 1.0);
-    const piperArgs = [
-      '--model', PIPER_MODEL,
-      '--output_file', tmpFile,
-      '--length_scale', String(Math.round((1.0 / finalRate) * 100) / 100),
+    // espeak-ng: -v he (עברית), pitch/speed/amp מהפרופיל, פלט WAV לקובץ
+    const rateAdj   = Math.round(profile.speed * (speed || 1.0));
+    const args = [
+      '-v', 'he',
+      '-p', String(profile.pitch),
+      '-s', String(rateAdj),
+      '-a', String(profile.amp),
+      '-w', tmpFile,   // פלט WAV לקובץ
+      text
     ];
-    if (_piperEspeakData) piperArgs.push('--espeak_data', _piperEspeakData);
 
-    const proc = spawn(PIPER_BIN, [...PIPER_ARGS_PREFIX, ...piperArgs], { timeout: 30000 });
-
+    const proc = spawn('espeak-ng', args, { timeout: 15000 });
     let errBuf = '';
     proc.stderr.on('data', d => { errBuf += d.toString(); });
-
-    proc.stdin.write(text);
-    proc.stdin.end();
 
     proc.on('close', (code) => {
       if (code !== 0) {
         fs.unlink(tmpFile, () => {});
-        return reject(new Error(`Piper נכשל (קוד ${code}): ${errBuf.trim().slice(0, 200)}`));
+        return reject(new Error('espeak-ng קוד ' + code + ': ' + errBuf.trim().slice(0, 150)));
       }
       fs.readFile(tmpFile, (readErr, data) => {
         fs.unlink(tmpFile, () => {});
         if (readErr) return reject(readErr);
-        if (!data || data.length === 0) return reject(new Error('Piper החזיר קובץ ריק'));
+        if (!data || data.length === 0) return reject(new Error('espeak-ng החזיר קובץ ריק'));
         resolve(data);
       });
     });
-
     proc.on('error', (err) => {
       fs.unlink(tmpFile, () => {});
-      reject(new Error(`Piper שגיאת תהליך: ${err.message}`));
+      reject(new Error('espeak-ng שגיאת תהליך: ' + err.message));
     });
   });
 }
+
 
 // קריאה לשרת ה-TTS הפנימי, עם ניסיון חוזר אוטומטי אם הניסיון הראשון נכשל
 // (לרוב נכשל בגלל timeout רגעי מול שרתי מיקרוסופט — לא צריך ליפול לדפדפן, פשוט לנסות שוב)
@@ -1637,11 +1536,11 @@ app.listen(PORT, async () => {
   log('🚀', `שרת רץ על פורט ${PORT}`);
   loadNames();
   // הורדת מודל Piper בפעם הראשונה (אם לא קיים) + בדיקת תקינות
-  await ensurePiperVoice();
+  // בדיקת espeak-ng עברית בעלייה
   fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(buf => {
-    log('✅', `Piper TTS: ניגון לדוגמה הצליח (${buf.length} בתים)`);
+    log('✅', 'espeak-ng TTS: ניגון לדוגמה הצליח (' + buf.length + ' בתים)');
   }).catch(e => {
-    log('🔇', `Piper TTS: ניגון לדוגמה נכשל — ${e.message.slice(0,300)}`);
+    log('🔇', 'espeak-ng TTS: ניגון לדוגמה נכשל — ' + e.message.slice(0,200));
   });
 });
 
