@@ -3870,17 +3870,29 @@ function handle(d){
       }
       if(d.mode!=='vote') {
         addFeed('💡','תשובה: '+d.correctText);
-        // ✅ תיקון סנכרון: מודיעים לשרת (reveal-narrator-done) רק אחרי שהקריין באמת סיים
-        // להקריא את "התשובה הנכונה היא..." — כדי שהמסך לא יתחלף לשאלה הבאה קודם.
-        // אם אין קריין (ttsOn=false) — מודיעים מיד, בלי המתנה.
+        // ✅ תיקון reveal-narrator-done:
+        // הבעיה: speak() השתמש ב-TTS_PRI.LOW. קולות שחקן (PLAYER=2 > LOW=0) ביטלו את
+        // הניגון לפני שהסתיים, cancelAllSpeech לא ידע לקרוא ל-notifyRevealDone, והמשחק
+        // המתין תמיד ל-fallback של 7 שניות.
+        // התיקון: משתמשים ב-_ttsPlay ישירות עם QUESTION priority, ושומרים את
+        // notifyRevealDone ב-_ttsNarratorDone (בדיוק כמו שאלה) — כך cancelAllSpeech
+        // תמיד מפעיל אותו לפני שמנקה, גם אם קול אחר מפסיק את ניגון התשובה.
+        let revealDoneFired = false;
         const notifyRevealDone = () => {
+          if (revealDoneFired) { ttsLog('notifyRevealDone — already fired, skip'); return; }
+          revealDoneFired = true;
           ttsLog('reveal → notifying server reveal-narrator-done', { revealRoundId: d.revealRoundId });
           if (d.revealRoundId != null) {
             fetch('/reveal-narrator-done', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ revealRoundId: d.revealRoundId }) }).catch(()=>{});
           }
         };
         if (ttsOn) {
-          setTimeout(() => speak('התשובה הנכונה היא: '+d.correctText, 1, 1, notifyRevealDone), 300);
+          setTimeout(() => {
+            _ttsPlay('התשובה הנכונה היא: '+d.correctText, TTS_PRI.QUESTION, notifyRevealDone);
+            // מגדירים _ttsNarratorDone אחרי _ttsPlay (כי _ttsPlay קורא cancelAllSpeech שמנקה אותו תחילה)
+            // כך אם קול שחקן יפסיק את ניגון התשובה, cancelAllSpeech יפעיל את notifyRevealDone
+            _ttsNarratorDone = notifyRevealDone;
+          }, 300);
         } else {
           notifyRevealDone();
         }
@@ -5208,7 +5220,7 @@ function _ttsPlay(text, pri, onEnd) {
     }
     ttsLog(`_ttsPlay DONE`, { seq, pri: priName });
     _ttsCurrentPri = -1;
-    _ttsFallback = null;
+    clearTimeout(_ttsFallback); _ttsFallback = null; // ✅ clearTimeout ולא רק null — מבטל גם את ה-35s backup אם audio.onended הספיק להגיע לפניו
     if (onEnd) onEnd();
   };
 
