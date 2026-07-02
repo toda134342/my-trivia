@@ -5234,7 +5234,20 @@ function _ttsPlayServer(text, voiceId, done) {
     audio.onerror = (e) => { ttsLog('Server audio.onerror', e?.type); notifyTtsFailure(); done(); };
     _edgeAudio = audio;
     audio.play()
-      .then(() => ttsLog('Server audio.play() OK'))
+      .then(() => {
+        ttsLog('Server audio.play() OK');
+        // ✅ תיקון fallback: ברגע שה-TTS מתחיל לנגן בפועל, מודיעים לשרת (narrator-ping)
+        // כדי שה-fallback יוארך ב-25 שניות נוספות מנקודה זו. זה פותר את הבעיה שבשאלה
+        // הראשונה (עם ספירה לאחור) ה-TTS מתחיל לנגן רק אחרי 8-10 שניות, ובלי ה-ping
+        // ה-fallback היה יורה לפני שה-TTS הסתיים.
+        const currentRoundId = window._currentNarratorRoundId;
+        if (currentRoundId) {
+          ttsLog('narrator-ping → sending to server', { roundId: currentRoundId });
+          fetch('/narrator-ping', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ roundId: currentRoundId }) }).catch(e => {
+            ttsLog('narrator-ping POST failed', String(e));
+          });
+        }
+      })
       .catch(e => {
         ttsLog('Server audio.play() FAILED', e?.message);
         notifyTtsFailure();
@@ -5360,8 +5373,14 @@ function notifyNarratorReady(roundId, tl) {
 function speakQuestionThenStart(question, answers, timeLimit, roundId) {
   const tl = timeLimit || 22;
   ttsLog('speakQuestionThenStart', { ttsOn, blocked: window._ttsBlocked, tl, roundId, q: (question||'').slice(0,50) });
+
+  // שומרים את ה-roundId הנוכחי גלובלית כדי שה-_ttsPlayServer יוכל לשלוח narrator-ping
+  // ברגע שהאודיו מתחיל לנגן בפועל (ראו audio.play().then(...) ב-_ttsPlayServer)
+  window._currentNarratorRoundId = roundId;
+
   if (!ttsOn || window._ttsBlocked) {
     ttsLog('speakQuestionThenStart → skip narrator, notifyNarratorReady immediately');
+    window._currentNarratorRoundId = null;
     notifyNarratorReady(roundId, tl); return;
   }
 
@@ -5380,6 +5399,7 @@ function speakQuestionThenStart(question, answers, timeLimit, roundId) {
   const onDone = () => {
     ttsLog('speakQuestionThenStart → onDone → notifyNarratorReady', { tl, roundId });
     _ttsNarratorDone = null;
+    window._currentNarratorRoundId = null;
     if (!timerStarted) { timerStarted = true; notifyNarratorReady(roundId, tl); }
   };
   _ttsNarratorDone = onDone;

@@ -443,7 +443,8 @@ function startGame(topic = 'all', mode = 'classic', topics = null, roomId = null
 let answerWindowStartedFor = null;
 let narratorFallbackTimer = null;
 let pendingAnswerWindow = null; // { roundId, timeLimit }
-const NARRATOR_FALLBACK_MS = 9000; // מקסימום זמן המתנה לקריין לפני שמתחילים את הטיימר בכל מקרה
+const NARRATOR_FALLBACK_MS = 30000; // רשת ביטחון — אם narrator-ping לא הגיע בכלל (תקלת רשת / TTS כבוי לגמרי)
+const NARRATOR_PING_EXTENSION_MS = 25000; // אחרי narrator-ping (TTS מתחיל): מאריכים ב-25 שניות נוספות
 
 // revealAdvanceStartedFor / revealNarratorFallbackTimer — אותו רעיון, אבל עבור המעבר לשאלה הבאה
 // אחרי reveal: לא עוברים לשאלה הבאה לפני שהקריין סיים להקריא "התשובה הנכונה היא...", אלא אם
@@ -1713,6 +1714,31 @@ app.post('/narrator-ready', (req, res) => {
     beginAnswerWindow(roundId, timeLimit);
   } else {
     log('⚠️', `narrator-ready התקבל עם roundId ישן/לא תואם (${roundId}) — השאלה הנוכחית התחילה ב-${questionStartedAt}. מתעלם.`);
+  }
+  res.json({ ok: true });
+});
+
+// /narrator-ping — הלקוח מודיע שה-TTS **התחיל לנגן** (לא סיים, רק התחיל).
+// ✅ זה פותר את בעיית ה-fallback: ה-fallback של 30 שניות מחושב מתחילת השאלה (broadcast),
+// אבל בשאלה הראשונה הלקוח עדיין בספירה לאחור ו-TTS מתחיל רק אחרי 8-10 שניות —
+// כלומר ה-fallback ירה לפני שה-TTS הסתיים. עם narrator-ping, ברגע שה-TTS מתחיל לנגן,
+// מאריכים את ה-fallback ב-25 שניות נוספות מאותו רגע, כך שיש תמיד מספיק זמן לסיום ההקראה.
+app.post('/narrator-ping', (req, res) => {
+  const { roundId } = req.body || {};
+  const now = Date.now();
+  if (roundId === questionStartedAt && answerWindowStartedFor !== roundId) {
+    // TTS התחיל לנגן — מאריכים את ה-fallback ב-NARRATOR_PING_EXTENSION_MS מהרגע הזה
+    clearTimeout(narratorFallbackTimer);
+    const timeLimit = gameMode === 'speedrun' ? 10 : gameMode === 'blitz' ? 5 : 22;
+    narratorFallbackTimer = setTimeout(() => {
+      log('⏰', `שאלה ${currentQuestion + 1}: fallback (אחרי narrator-ping) — TTS לא סיים תוך ${NARRATOR_PING_EXTENSION_MS}ms מתחילת הניגון, מפעילים חלון תשובה (roundId=${roundId})`);
+      beginAnswerWindow(roundId, timeLimit);
+    }, NARRATOR_PING_EXTENSION_MS);
+    log('🔔', `narrator-ping התקבל — TTS התחיל לנגן ${now - questionStartedAt}ms אחרי השאלה, ה-fallback הוארך ב-${NARRATOR_PING_EXTENSION_MS}ms (roundId=${roundId})`);
+  } else if (answerWindowStartedFor === roundId) {
+    log('🔔', `narrator-ping התקבל אבל חלון התשובה כבר הופעל (roundId=${roundId}) — מתעלם`);
+  } else {
+    log('⚠️', `narrator-ping התקבל עם roundId ישן/לא תואם (${roundId}), מתעלם`);
   }
   res.json({ ok: true });
 });
