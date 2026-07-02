@@ -3776,6 +3776,8 @@ function handle(d){
       break;
 
     case 'question':
+      ttsLog('case question', { roundId: d.roundId, ttsOn, countdownActive, q: (d.question||'').slice(0,40) });
+      stopTimer(); // ✅ עוצרים טיימר ישן לפני שהשאלה החדשה מתחילה (מונע interval ישן שממשיך לרוץ)
       currentQ=d;gameMode=d.mode||gameMode;correctAns=null;
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;p._first=false;});
       renderQuestion(d);
@@ -3794,7 +3796,7 @@ function handle(d){
           ttsLog('case question: countdownActive → _pendingSpeak', { q: (d.question||'').slice(0,40) });
           window._pendingSpeak = { question: d.question, answers: d.answers, timeLimit: d.timeLimit||22, roundId: d.roundId };
         } else {
-          ttsLog('case question: calling speakQuestionThenStart');
+          ttsLog('case question: calling speakQuestionThenStart immediately');
           speakQuestionThenStart(d.question, d.answers, d.timeLimit||22, d.roundId);
         }
       } else {
@@ -5111,12 +5113,13 @@ function isEdgeVoice(name) {
 
 // ========== TTS ENGINE — מנגנון אחיד, ללא תחרויות, קול שרת בלבד ==========
 // רמות עדיפות: QUESTION (גבוהה) > PLAYER (בינונית) > LOW (נמוכה)
-// כל speak חדש ברמה שווה או גבוהה יותר — מבטל את הנוכחי
+// QUESTION ו-PLAYER באותה רמה — כל אחד מבטל את השני (כדי שלחיצת כפתור תפסיק קול שרץ)
+// רק LOW נחסם תמיד כשרץ משהו אחר
 
-const TTS_PRI = { LOW: 0, PLAYER: 1, QUESTION: 2 };
+const TTS_PRI = { LOW: 0, PLAYER: 2, QUESTION: 2 };
 let _ttsCurrentPri   = -1;        // עדיפות הדיבור הנוכחי
 let _ttsSeq          = 0;         // counter — מונע ירי של callbacks ישנים
-let _ttsNarratorDone = null;      // callback לסיום הקראת שאלה
+let _ttsNarratorDone = null;      // callback לסיום הקראת שאלה — נשמר כדי להפעיל narrator-ready גם אם TTS הופסק באמצע
 let _ttsFallback     = null;      // timer fallback
 
 // ===== TTS DEBUG LOGGER =====
@@ -5153,10 +5156,23 @@ function saveTTSLogs() {
 }
 
 function cancelAllSpeech() {
-  ttsLog('cancelAllSpeech', { seq: _ttsSeq, pri: _ttsCurrentPri, hadAudio: !!_edgeAudio, hadFallback: !!_ttsFallback });
+  ttsLog('cancelAllSpeech', { seq: _ttsSeq, pri: _ttsCurrentPri, hadAudio: !!_edgeAudio, hadFallback: !!_ttsFallback, hadNarratorDone: !!_ttsNarratorDone });
   _ttsSeq++;
   _ttsCurrentPri   = -1;
-  _ttsNarratorDone = null;
+
+  // ✅ תיקון קריטי: אם TTS של שאלה רץ עכשיו ומישהו מפסיקו (קול אחר / ביטול) —
+  // חייבים לשלוח narrator-ready לשרת לפני שמנקים, אחרת הטיימר לא יתחיל לעולם.
+  // (הבאג המקורי: cancelAllSpeech ניקה _ttsNarratorDone לפני שהוא הופעל, ואז
+  //  הבדיקה if(_ttsNarratorDone === onDone) נכשלה תמיד — ולכן narrator-ready לא נשלח.)
+  if (_ttsNarratorDone) {
+    const cb = _ttsNarratorDone;
+    _ttsNarratorDone = null;
+    ttsLog('cancelAllSpeech → calling _ttsNarratorDone (narrator interrupted mid-read, starting timer now)');
+    cb();
+  } else {
+    _ttsNarratorDone = null;
+  }
+
   if (_ttsFallback) { clearTimeout(_ttsFallback); _ttsFallback = null; }
   if (_edgeAudio) {
     try { _edgeAudio.onended = null; _edgeAudio.onerror = null;
@@ -5236,10 +5252,22 @@ function _ttsPlayServer(text, voiceId, done) {
     audio.play()
       .then(() => {
         ttsLog('Server audio.play() OK');
-        // ✅ תיקון fallback: ברגע שה-TTS מתחיל לנגן בפועל, מודיעים לשרת (narrator-ping)
-        // כדי שה-fallback יוארך ב-25 שניות נוספות מנקודה זו. זה פותר את הבעיה שבשאלה
-        // הראשונה (עם ספירה לאחור) ה-TTS מתחיל לנגן רק אחרי 8-10 שניות, ובלי ה-ping
-        // ה-fallback היה יורה לפני שה-TTS הסתיים.
+
+        // ✅ תיקון תזמון fallback:
+        // ה-_ttsFallback (6 שניות) נועד לתפוס כשל בשליפת TTS מהשרת (fetch נכשל/timeout).
+        // ברגע שאודיו מתחיל לנגן בפועל, אנחנו יודעים ש-fetch הצליח — ה-fallback הקצר כבר
+        // לא רלוונטי. מחליפים אותו בגיבוי של 35 שניות כנגד מקרה קצה שבו audio.onended
+        // לא יורה (למשל תקלת דפדפן נדירה). בפועל, audio.onended תמיד יורה לפני 35 שניות.
+        // בלי התיקון הזה: ה-fallback של 6 שניות ירה בזמן שאודיו עוד נגן, קרא ל-done()
+        // מוקדם מדי, והטיימר התחיל לפני שהקריין סיים — וזו בדיוק הבעיה שדווחה.
+        if (_ttsFallback) { clearTimeout(_ttsFallback); }
+        _ttsFallback = setTimeout(() => {
+          ttsLog('_ttsPlayServer audio.onended TIMEOUT (35s backup) — calling done()', { text: text.slice(0,40) });
+          notifyTtsFailure();
+          done();
+        }, 35000);
+
+        // שולח narrator-ping לשרת כדי להאריך את ה-fallback שלו ב-25 שניות מהרגע הזה
         const currentRoundId = window._currentNarratorRoundId;
         if (currentRoundId) {
           ttsLog('narrator-ping → sending to server', { roundId: currentRoundId });
@@ -5397,18 +5425,28 @@ function speakQuestionThenStart(question, answers, timeLimit, roundId) {
 
   let timerStarted = false;
   const onDone = () => {
-    ttsLog('speakQuestionThenStart → onDone → notifyNarratorReady', { tl, roundId });
+    ttsLog('speakQuestionThenStart → onDone → notifyNarratorReady', { tl, roundId, timerStarted });
     _ttsNarratorDone = null;
     window._currentNarratorRoundId = null;
     if (!timerStarted) { timerStarted = true; notifyNarratorReady(roundId, tl); }
   };
-  _ttsNarratorDone = onDone;
 
-  _ttsPlay(fullText, TTS_PRI.QUESTION, () => {
-    ttsLog('speakQuestionThenStart → _ttsPlay callback, calling onDone if still current');
-    if (_ttsNarratorDone === onDone) onDone();
-    else ttsLog('speakQuestionThenStart → onDone already replaced/cleared, skip');
-  });
+  // ✅ תיקון הבאג הקריטי:
+  // לפני התיקון: הקוד עשה:
+  //   _ttsNarratorDone = onDone;   // שורה 1
+  //   _ttsPlay(text, QUESTION, () => {
+  //     if (_ttsNarratorDone === onDone) onDone();  // בדיקה שתמיד נכשלת!
+  //   });
+  //
+  // הבעיה: _ttsPlay קורא cancelAllSpeech() כצעד ראשון — ו-cancelAllSpeech מנקה
+  // _ttsNarratorDone = null. כך שעד שה-callback רץ, _ttsNarratorDone כבר null,
+  // הבדיקה נכשלת, ו-onDone לא נקרא לעולם → narrator-ready לא נשלח → טיימר לא מתחיל.
+  //
+  // התיקון: מעבירים את onDone ישירות ל-_ttsPlay בלי ה-wrapper עם הבדיקה הנכשלת.
+  // _ttsNarratorDone נשמר בנפרד כדי שאם TTS מופסק (cancelAllSpeech), onDone עדיין יקרא.
+  _ttsPlay(fullText, TTS_PRI.QUESTION, onDone);
+  // מגדירים אחרי _ttsPlay (כי _ttsPlay קורא cancelAllSpeech שמנקה את זה תחילה)
+  _ttsNarratorDone = onDone;
 }
 
 // compat shim — לא בשימוש יותר אבל נשמר למקרה שקוד ישן קורא
