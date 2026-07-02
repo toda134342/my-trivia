@@ -1351,7 +1351,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
         <select onchange="setMusicStyleImmediate(this.value)" id="music-style-sel" style="background:var(--s2);border:1px solid var(--border);color:var(--text);padding:3px 5px;border-radius:7px;font-family:'Rubik',sans-serif;font-size:0.72rem;cursor:pointer;outline:none;max-width:58px;">
           <option value="tension">מתח</option>
           <option value="dramatic">דרמטי</option>
-          <option value="pulse">פולס</option>
+          <option value="pulse" selected>פולס</option>
           <option value="suspense">מסתורי</option>
           <option value="dance">ריגוד</option>
           <option value="jazz">ג'אז</option>
@@ -1741,7 +1741,7 @@ const sfx = {
 
 function startMusic() {
   if (!musicOn || musicPlaying) return;
-  const style = (document.getElementById('music-style-sel')||{}).value || 'tension';
+  const style = (document.getElementById('music-style-sel')||{}).value || 'pulse';
   try {
     const a = getAC();
     const master = a.createGain(); master.gain.value=0.07; master.connect(a.destination);
@@ -1888,7 +1888,20 @@ function stopMusic() {
 
 function setMusicStyle(v) {}
 function setMusicStyleImmediate(v) {
-  if(musicPlaying){ stopMusic(); setTimeout(startMusic, 200); }
+  // ✅ תיקון החלפה מיידית: עצור את המוזיקה הנוכחית מיד (ללא fadeout של 350ms),
+  // ואז הפעל את הסגנון החדש — כך אין שקט בין שני הסגנונות.
+  // אם המוזיקה לא רצה כרגע (למשל במהלך reveal), שמור את הבחירה לפעם הבאה שתתחיל.
+  if (musicPlaying) {
+    // עצירה מיידית (בלי exponentialRamp):
+    try {
+      if (musicOsc?.allIntervals) musicOsc.allIntervals.forEach(iv => clearInterval(iv));
+      if (musicGain) musicGain.gain.setValueAtTime(0, getAC().currentTime);
+      if (musicOsc?.allOscs) musicOsc.allOscs.forEach(o => { try { o.stop(); } catch(e){} });
+    } catch(e) {}
+    musicPlaying = false;
+    if (musicOn) startMusic(); // הפעל מיד עם הסגנון החדש
+  }
+  // (אם לא נגן עכשיו, הסגנון החדש ייקרא בפעם הבאה שstartMusic ייקרא)
 }
 
 

@@ -496,6 +496,12 @@ function showQuestion() {
 // שקובע מתי revealAnswer ירוץ). נקרא או מ-/narrator-ready או מה-fallback, מי שמגיע ראשון.
 // idempotent: לא יפעיל פעמיים לאותו roundId.
 function beginAnswerWindow(roundId, timeLimit) {
+  // ✅ תיקון כפתור עצור: אם המשחק נעצר (gameState !== 'playing') בזמן שה-narrator-ready/fallback הגיע
+  // (למשל: לחיצת "עצור" בזמן שהקריין עדיין מקריא) — מתעלמים ולא מתחילים טיימר חדש.
+  if (gameState !== 'playing') {
+    log('⚠️', `beginAnswerWindow: gameState="${gameState}" ≠ "playing" — לא מפעיל טיימר (המשחק נעצר/הסתיים)`);
+    return;
+  }
   if (roundId !== questionStartedAt) {
     log('⚠️', `beginAnswerWindow עם roundId ישן/לא תואם (${roundId}) — השאלה הנוכחית היא ${questionStartedAt}. מתעלם.`);
     return;
@@ -546,6 +552,16 @@ function revealAnswer() {
   }
   log('💡', `תשובה: ${q.a[q.correct]}`);
 
+  // ✅ פתרון השהייה בין סיום הטיימר לנאום התשובה:
+  // מיד כשהשרת יודע מה התשובה הנכונה, נטען את ה-TTS למטמון (לא ממתינים לבקשה מהלקוח).
+  // כך כשהלקוח יבקש את האודיו אחרי קבלת ה-reveal, הוא יקבל אותו מהמטמון באופן מיידי
+  // במקום לחכות 1-2 שניות לייצור TTS חדש.
+  // מטעינים בכל וריאנטי המהירות הנפוצים כדי לוודא שיהיה במטמון ללא תלות בהגדרת המהירות של הלקוח.
+  const revealText = `התשובה הנכונה היא: ${q.a[q.correct]}`;
+  const voiceForPrewarm = (appSettings && appSettings.trivia_voice) || 'edge:avri';
+  [1.0, 1.3].forEach(spd => fetchTTS(revealText, voiceForPrewarm, spd).catch(() => {}));
+  log('🔊', `pre-warming TTS למטמון: "${revealText.slice(0,40)}" [voice=${voiceForPrewarm}]`);
+
   // roundId חדש לשלב ה-reveal, כדי שהלקוח יוכל לדווח בחזרה מתי הקריין סיים להקריא
   // את "התשובה הנכונה היא..." (ראו /reveal-narrator-done ו-advanceToNextQuestion).
   const rRoundId = Date.now();
@@ -575,6 +591,11 @@ function revealAnswer() {
 // (כשהקריין מדווח שסיים להקריא את התשובה הנכונה) או מה-fallback. idempotent לכל revealRoundId,
 // ומבטיח זמן מינימלי להצגת מסך התשובה גם אם הקריין מסיים מהר במיוחד.
 function advanceToNextQuestion(rRoundId) {
+  // ✅ תיקון כפתור עצור: אם המשחק נעצר בזמן שה-reveal-narrator-done הגיע, לא עוברים לשאלה הבאה
+  if (gameState !== 'playing') {
+    log('⚠️', `advanceToNextQuestion: gameState="${gameState}" ≠ "playing" — לא עובר לשאלה הבאה (המשחק נעצר/הסתיים)`);
+    return;
+  }
   if (rRoundId !== revealRoundId) {
     log('⚠️', `advanceToNextQuestion עם revealRoundId ישן/לא תואם (${rRoundId}) — הנוכחי הוא ${revealRoundId}. מתעלם.`);
     return;
