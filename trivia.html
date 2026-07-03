@@ -3717,7 +3717,15 @@ setInterval(() => {
   }
 }, 2000);
 
+// אירועים ש"אמורים" להגיע רק כשהמשחק פעיל אצל הלקוח (gameState==='playing').
+// אם אחד מהם מגיע אחרי שהמשחק כבר נעצר מבחינת הלקוח — זה בדיוק "לחצתי עצור אבל המשחק ממשיך":
+// כנראה SSE ישן/מנותק־מחדש עדיין שולח אירועים מהמשחק הקודם, או שיש התנגשות מצב client/server.
+const _PLAYING_ONLY_EVENT_TYPES_CLIENT = new Set(['question','startTimer','reveal','allAnswered','playerEliminated']);
 function handle(d){
+  if (_PLAYING_ONLY_EVENT_TYPES_CLIENT.has(d.type) && gameState !== 'playing') {
+    ttsLog('🚨 EVENT אחרי עצירה — התקבל אירוע משחק כשgameState≠playing', { type: d.type, localGameState: gameState, roundId: d.roundId || d.revealRoundId || 'n/a' });
+    if (typeof serverLog === 'function') serverLog('🚨', `לקוח קיבל "${d.type}" כש-gameState="${gameState}" (לא playing) — ייתכן שהמשחק "נעצר" רק ויזואלית`);
+  }
   switch(d.type){
     case 'settings-changed':
       // עדכון חי מהשרת — הגדרה שונתה במחשב אחר, מוחל כאן מיידית בלי רענון דף
@@ -5213,6 +5221,9 @@ function cancelAllSpeech() {
   }
   _ttsQueue = []; _ttsBusy = false;
   if (typeof hideNarratorDim === 'function') hideNarratorDim();
+  // ✅ רשת ביטחון: אם פאנל בחירת קול נשאר פתוח ומתנגן ברקע כשהמשחק נעצר/מסתיים,
+  // גם הוא נעצר כאן — כדי שלא יישאר "קול רקע" אחרי עצירת המשחק.
+  if (typeof stopVoicePreview === 'function') stopVoicePreview('cancelAllSpeech');
 }
 
 function _ttsPlay(text, pri, onEnd) {
@@ -7731,12 +7742,14 @@ function openVoicePanel() {
 }
 
 function closeVoicePanel() {
+  stopVoicePreview('panel closed');
   vpPendingVoice = null;
   document.getElementById('voice-panel-overlay').style.display = 'none';
   document.getElementById('voice-panel').style.display = 'none';
 }
 
 function confirmVoicePanel() {
+  stopVoicePreview('panel confirmed');
   if (vpPendingVoice) {
     setVoice(vpPendingVoice);
   }
@@ -7758,14 +7771,43 @@ function selectVoiceFromPanel(id, btn) {
   }
 }
 
+// ✅ תיקון: קול-רקע כפול בפאנל הקולות — לפני התיקון, כל לחיצה על ▶ יצרה
+// Audio() חדש בלי לעצור את הקודם. אם המשתמש בדק כמה קולות ברצף (או לחץ פעמיים
+// על אותו קול), כמה קטעי שמע התנגנו זה על זה במקביל — זה בדיוק "עוד קולות ברקע"
+// שדווח. עכשיו יש מעקב יחיד (_previewAudio) שעוצר כל תצוגה מקדימה קודמת לפני שמתחילה חדשה.
+let _previewAudio = null;
+let _previewSeq = 0;
+function stopVoicePreview(reason) {
+  if (_previewAudio) {
+    ttsLog('stopVoicePreview — עוצר תצוגה מקדימה קודמת', { reason, wasPlaying: !_previewAudio.paused, src: _previewAudio.src });
+    try { _previewAudio.onended = null; _previewAudio.onerror = null; _previewAudio.pause(); _previewAudio.currentTime = 0; } catch {}
+    _previewAudio = null;
+  }
+}
 function testPendingVoice(id) {
   unlockTTS();
+  const seq = ++_previewSeq;
+  // עוצרים כל תצוגה מקדימה קודמת שעדיין מתנגנת/נטענת — מונע חפיפת קולות ברקע
+  stopVoicePreview('new preview requested: ' + id);
   const sampleText = 'שלום! זהו הקול שנבחר למשחק.';
   const params = new URLSearchParams({ text: sampleText, voice: id });
+  ttsLog('testPendingVoice START', { seq, id, url: '/tts?' + params.toString() });
   const audio = new Audio('/tts?' + params);
-  audio.play().catch(() => {
-    ttsLog('testPendingVoice play failed', id);
-  });
+  _previewAudio = audio;
+  audio.onended = () => {
+    ttsLog('testPendingVoice ended naturally', { seq, id });
+    if (_previewAudio === audio) _previewAudio = null;
+  };
+  audio.onerror = (e) => {
+    ttsLog('testPendingVoice audio error', { seq, id, error: e?.message || String(e) });
+    if (_previewAudio === audio) _previewAudio = null;
+  };
+  audio.play()
+    .then(() => ttsLog('testPendingVoice play() OK', { seq, id }))
+    .catch((err) => {
+      ttsLog('testPendingVoice play failed', { seq, id, error: err?.message || String(err) });
+      if (_previewAudio === audio) _previewAudio = null;
+    });
 }
 
 function renderVoiceList() {
