@@ -518,6 +518,17 @@ function beginAnswerWindow(roundId, timeLimit) {
   }
   answerWindowStartedFor = roundId;
   clearTimeout(narratorFallbackTimer); narratorFallbackTimer = null;
+
+  // ✅ pre-warm TTS של "התשובה הנכונה היא: X" עכשיו — 22 שניות לפני הReveal.
+  // כך כשהReveal יגיע, ה-TTS בטוח במטמון ואין המתנה לייצור.
+  const q = questions[currentQuestion];
+  if (q) {
+    const revealText = `התשובה הנכונה היא: ${q.a[q.correct]}`;
+    const voice = (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    [1.0, 1.3].forEach(spd => fetchTTS(revealText, voice, spd).catch(() => {}));
+    log('🔊', `pre-warming reveal TTS (${timeLimit}s מראש): "${revealText.slice(0,40)}" [voice=${voice}]`);
+  }
+
   broadcast({ type: 'startTimer', timeLimit, roundId });
   clearTimeout(questionTimer);
   clearInterval(questionTickInterval);
@@ -551,16 +562,6 @@ function revealAnswer() {
     log('🕰️', `סנכרון קריין/טיימר: לא התקבל narrator-ready לשאלה הזו לפני שהתשובה התגלתה (elapsed=${elapsedSinceQuestionStart}ms, timeLimit=${timeLimit}ש') — ייתכן שזה קרה דרך ה-fallback`);
   }
   log('💡', `תשובה: ${q.a[q.correct]}`);
-
-  // ✅ פתרון השהייה בין סיום הטיימר לנאום התשובה:
-  // מיד כשהשרת יודע מה התשובה הנכונה, נטען את ה-TTS למטמון (לא ממתינים לבקשה מהלקוח).
-  // כך כשהלקוח יבקש את האודיו אחרי קבלת ה-reveal, הוא יקבל אותו מהמטמון באופן מיידי
-  // במקום לחכות 1-2 שניות לייצור TTS חדש.
-  // מטעינים בכל וריאנטי המהירות הנפוצים כדי לוודא שיהיה במטמון ללא תלות בהגדרת המהירות של הלקוח.
-  const revealText = `התשובה הנכונה היא: ${q.a[q.correct]}`;
-  const voiceForPrewarm = (appSettings && appSettings.trivia_voice) || 'edge:avri';
-  [1.0, 1.3].forEach(spd => fetchTTS(revealText, voiceForPrewarm, spd).catch(() => {}));
-  log('🔊', `pre-warming TTS למטמון: "${revealText.slice(0,40)}" [voice=${voiceForPrewarm}]`);
 
   // roundId חדש לשלב ה-reveal, כדי שהלקוח יוכל לדווח בחזרה מתי הקריין סיים להקריא
   // את "התשובה הנכונה היא..." (ראו /reveal-narrator-done ו-advanceToNextQuestion).

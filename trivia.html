@@ -3900,12 +3900,10 @@ function handle(d){
           }
         };
         if (ttsOn) {
-          setTimeout(() => {
-            _ttsPlay('התשובה הנכונה היא: '+d.correctText, TTS_PRI.QUESTION, notifyRevealDone);
-            // מגדירים _ttsNarratorDone אחרי _ttsPlay (כי _ttsPlay קורא cancelAllSpeech שמנקה אותו תחילה)
-            // כך אם קול שחקן יפסיק את ניגון התשובה, cancelAllSpeech יפעיל את notifyRevealDone
-            _ttsNarratorDone = notifyRevealDone;
-          }, 300);
+          // ✅ אין יותר setTimeout 300ms — ה-TTS כבר במטמון (pre-warm ב-beginAnswerWindow, 22 שניות מראש).
+          // הקריין מתחיל לדבר מיד עם הופעת מסך התשובה.
+          _ttsPlay('התשובה הנכונה היא: '+d.correctText, TTS_PRI.QUESTION, notifyRevealDone);
+          _ttsNarratorDone = notifyRevealDone;
         } else {
           notifyRevealDone();
         }
@@ -5261,9 +5259,13 @@ function notifyTtsFailure() {
 
 function _ttsPlayServer(text, voiceId, done) {
   const spd = EDGE_SPEED;
-  const key = voiceId + '|' + spd + '|' + text;
+  // ✅ תיקון cache key: preloadEdge משתמש ב-text.slice(0,500) כמפתח.
+  // לפני התיקון, _ttsPlayServer השתמש ב-text המלא — אי-התאמה גרמה ל-cache miss בכל פעם,
+  // אפילו אם הטקסט נטען מראש (preload מ-case 'question'), ה-TTS הוריד שוב מהשרת.
+  const cacheText = text.slice(0, 500);
+  const key = voiceId + '|' + spd + '|' + cacheText;
   const cached = _edgeBlobCache.has(key);
-  ttsLog(`_ttsPlayServer`, { cached, voiceId, text: text.slice(0,40) });
+  ttsLog(`_ttsPlayServer`, { cached, voiceId, textLen: text.length, cacheKey: key.slice(0,60) });
 
   const doPlay = (url) => {
     if (!ttsOn || window._ttsBlocked) {
@@ -5292,13 +5294,17 @@ function _ttsPlayServer(text, voiceId, done) {
           done();
         }, 35000);
 
-        // שולח narrator-ping לשרת כדי להאריך את ה-fallback שלו ב-25 שניות מהרגע הזה
+        // narrator-ping — רק עבור TTS של שאלה, לא קולות תגובה/ספירה
         const currentRoundId = window._currentNarratorRoundId;
-        if (currentRoundId) {
+        const isQAudio = window._ttsIsQuestionAudio;
+        ttsLog('Server audio.play() OK', { duration: audio.duration?.toFixed(1) || '?', isQuestionAudio: isQAudio, roundId: currentRoundId || 'none' });
+        if (currentRoundId && isQAudio) {
           ttsLog('narrator-ping → sending to server', { roundId: currentRoundId });
           fetch('/narrator-ping', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ roundId: currentRoundId }) }).catch(e => {
             ttsLog('narrator-ping POST failed', String(e));
           });
+        } else {
+          ttsLog('narrator-ping SKIPPED (not question TTS or no roundId)', { isQAudio, currentRoundId });
         }
       })
       .catch(e => {
@@ -5309,11 +5315,11 @@ function _ttsPlayServer(text, voiceId, done) {
   };
 
   if (cached) {
-    ttsLog('Server: playing from cache');
+    ttsLog('Server: playing from cache ✅');
     doPlay(_edgeBlobCache.get(key));
   } else {
-    ttsLog('Server: fetching TTS...');
-    preloadEdge(text, voiceId, spd).then(url => {
+    ttsLog('Server: fetching TTS (cache miss, key:', key.slice(0,60) + ')');
+    preloadEdge(cacheText, voiceId, spd).then(url => {
       if (!url) { ttsLog('Server: TTS fetch failed — no audio'); notifyTtsFailure(); done(); return; }
       ttsLog('Server: fetch OK, playing');
       doPlay(url);
@@ -5415,8 +5421,15 @@ function speakQuestion(question, answers) { /* dead — kept for safety, never c
 // (questionTimer האמיתי שקובע מתי revealAnswer ירוץ), כדי שהוא תמיד יתחיל באותו רגע
 // שהטיימר הוויזואלי מתחיל אצל הלקוח. ראו beginAnswerWindow ב-server.js.
 function notifyNarratorReady(roundId, tl) {
-  ttsLog('notifyNarratorReady → startTimer locally + telling server to start real timer', { roundId, tl });
-  // הטיימר הויזואלי מתחיל מקומית, באותו רגע שבו השרת מקבל את ה-POST ומתחיל את הטיימר האמיתי שלו
+  // ✅ תיקון כפתור עצור (צד לקוח): אם המשחק לא פעיל, לא מתחילים טיימר ולא שולחים POST.
+  // cancelAllSpeech קורא ל-_ttsNarratorDone → onDone → notifyNarratorReady גם אחרי עצור.
+  // בלי הבדיקה הזו, הטיימר הוויזואלי היה מתחיל על המסך גם אחרי לחיצת "עצור".
+  if (gameState !== 'playing') {
+    ttsLog('notifyNarratorReady SKIPPED — gameState=' + gameState + ' (game stopped/ended)');
+    window._currentNarratorRoundId = null;
+    return;
+  }
+  ttsLog('notifyNarratorReady → startTimer locally + telling server to start real timer', { roundId, tl, gameState });
   startTimer(tl);
   fetch('/narrator-ready', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roundId }) }).catch((err) => {
     ttsLog('notifyNarratorReady → POST failed (server fallback timer will kick in)', { roundId, err: String(err) });
@@ -5430,6 +5443,7 @@ function speakQuestionThenStart(question, answers, timeLimit, roundId) {
   // שומרים את ה-roundId הנוכחי גלובלית כדי שה-_ttsPlayServer יוכל לשלוח narrator-ping
   // ברגע שהאודיו מתחיל לנגן בפועל (ראו audio.play().then(...) ב-_ttsPlayServer)
   window._currentNarratorRoundId = roundId;
+  window._ttsIsQuestionAudio = true; // סמן שה-TTS הבא הוא של שאלה — narrator-ping ישלח רק אם זה פעיל
 
   if (!ttsOn || window._ttsBlocked) {
     ttsLog('speakQuestionThenStart → skip narrator, notifyNarratorReady immediately');
@@ -5453,6 +5467,7 @@ function speakQuestionThenStart(question, answers, timeLimit, roundId) {
     ttsLog('speakQuestionThenStart → onDone → notifyNarratorReady', { tl, roundId, timerStarted });
     _ttsNarratorDone = null;
     window._currentNarratorRoundId = null;
+    window._ttsIsQuestionAudio = false; // ✅ מאפס — קולות שיבואו אחרי (תגובות שחקן) לא ישלחו narrator-ping
     if (!timerStarted) { timerStarted = true; notifyNarratorReady(roundId, tl); }
   };
 
