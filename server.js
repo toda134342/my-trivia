@@ -259,14 +259,27 @@ function handleAnswer(player, chosen) {
   const isCorrect = chosen === q.correct;
 
   // בדוק אם כולם ענו — אם כן, קצר את הזמן ל-3 שניות
+  // ✅ תיקון: הוסרה הבדיקה && questionTimer — אפשר קיצור גם אם הקריין עדיין מדבר
+  // (לפני: אם הקריין לא סיים, questionTimer לא היה קיים ו"כולם ענו" לא קיצר כלום)
   const checkAllAnswered = () => {
     const active = Object.values(players).filter(p => !p._eliminated);
     const allAnswered = active.every(p => p.answered);
-    if (allAnswered && questionTimer) {
+    if (allAnswered && answerWindowStartedFor !== questionStartedAt) {
+      // גם אם הקריין לא סיים — מבטלים את המתנת הקריין ומקצרים לחשיפה
+      clearTimeout(questionTimer); questionTimer = null;
+      clearTimeout(narratorFallbackTimer); narratorFallbackTimer = null;
+      pendingAnswerWindow = null;
+      // מסמנים שחלון התשובה "כבר הופעל" כדי לחסום קריאות עתידיות ל-beginAnswerWindow
+      answerWindowStartedFor = questionStartedAt;
+      questionTimer = setTimeout(revealAnswer, 3000);
+      broadcast({ type: 'allAnswered', secsLeft: 3 });
+      log('✅', 'כולם ענו — חשיפה בעוד 3 שניות');
+    } else if (allAnswered && questionTimer) {
+      // חלון התשובה כבר פעיל — רק מקצרים את הטיימר הקיים
       clearTimeout(questionTimer);
       questionTimer = setTimeout(revealAnswer, 3000);
-      broadcast({ type: 'allAnswered' });
-      log('✅', 'כולם ענו — חשיפה בעוד 3 שניות');
+      broadcast({ type: 'allAnswered', secsLeft: 3 });
+      log('✅', 'כולם ענו (חלון פעיל) — חשיפה בעוד 3 שניות');
     }
   };
 

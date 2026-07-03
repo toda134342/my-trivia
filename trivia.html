@@ -2122,7 +2122,9 @@ function showCountdown(mode, onDone, introText) {
 
 // ========== FIRST ANSWER ANIMATION ==========
 function showFirstAnimation(playerName, color) {
-  document.getElementById('first-name').textContent = playerName;
+  const el = document.getElementById('first-name');
+  if (!el) { ttsLog('showFirstAnimation: #first-name not found, skip'); return; }
+  el.textContent = playerName;
   document.getElementById('first-name').style.color = color || 'var(--gold)';
   const banner = document.getElementById('first-banner');
   banner.style.display = 'flex';
@@ -3854,15 +3856,18 @@ function handle(d){
       break;
 
     case 'allAnswered':
-      // כולם ענו — קצר טיימר ל-3 שניות
+      // ✅ כולם ענו — מבטלים קריאת שאלה (אין טעם להמשיך אם כולם ענו)
+      // ומקצרים את הטיימר הוויזואלי ל-3 שניות
+      window._pendingSpeak = null;  // אל תתחיל לקרוא שאלה אם עוד לא התחיל
+      if (typeof cancelAllSpeech === 'function') cancelAllSpeech(); // עצור קריין שכבר מדבר
       stopTimer();
-      const fill=document.getElementById('tfill');
-      const num=document.getElementById('tnum');
-      if(fill){fill.style.transition='3s linear';fill.style.width='0%';fill.classList.add('warn');}
-      if(num) num.textContent='3';
-      addFeed('✅','כולם ענו!');
-      let cnt=3;
-      const cd=setInterval(()=>{cnt--;if(num)num.textContent=cnt;if(cnt<=0)clearInterval(cd);},1000);
+      { const fill=document.getElementById('tfill');
+        const num=document.getElementById('tnum');
+        if(fill){fill.style.transition='3s linear';fill.style.width='0%';fill.classList.add('warn');}
+        if(num) num.textContent='3';
+        addFeed('✅','כולם ענו!');
+        let cnt=3;
+        const cd=setInterval(()=>{cnt--;const n=document.getElementById('tnum');if(n)n.textContent=cnt;if(cnt<=0)clearInterval(cd);},1000); }
       break;
 
     case 'reveal':
@@ -4044,6 +4049,10 @@ function handle(d){
     case 'stopped':
       gameState='lobby';stopTimer();stopMusic();
       cancelAllSpeech();
+      // ✅ תיקון: ניקוי _pendingSpeak ו-countdownActive כדי שהשאלה של המשחק הישן
+      // לא תמשיך לדבר אחרי לחיצת עצור (הספירה לאחור מסיימת ומדברת את השאלה הישנה)
+      window._pendingSpeak = null;
+      countdownActive = false;
       goLobby();
       document.getElementById('btn-start').style.display='block';
       { const bs=document.getElementById('btn-stop'); if(bs){bs.style.display='none';bs.textContent='⏹ עצור משחק';bs.style.opacity='';} }
@@ -5134,7 +5143,8 @@ function isEdgeVoice(name) {
   return !!name;
 }
 
-// ========== TTS ENGINE — מנגנון אחיד, ללא תחרויות, קול שרת בלבד ==========
+// מטמון fetches פעילים — מונע שתי הורדות מקבילות לאותו טקסט (double audio bug)
+const _fetchingEdge = new Map();
 // רמות עדיפות: QUESTION (גבוהה) > PLAYER (בינונית) > LOW (נמוכה)
 // QUESTION ו-PLAYER באותה רמה — כל אחד מבטל את השני (כדי שלחיצת כפתור תפסיק קול שרץ)
 // רק LOW נחסם תמיד כשרץ משהו אחר
@@ -5336,9 +5346,17 @@ function preloadEdge(text, voiceId, speed) {
   if (!text) return Promise.resolve(null);
   const spd = speed || EDGE_SPEED;
   const key = voiceId + '|' + spd + '|' + text.slice(0, 500);
+  // ✅ תיקון double-audio: אם כבר במטמון — מחזיר מיד
   if (_edgeBlobCache.has(key)) return Promise.resolve(_edgeBlobCache.get(key));
+  // ✅ תיקון double-audio: אם fetch כבר בתהליך לאותו key — מחזיר את אותו Promise
+  // (לפני התיקון: case 'question' ו-_ttsPlayServer קראו preloadEdge באותו key,
+  //  שני fetches רצו במקביל, שני audio objects נוצרו → קול כפול ומעורבב)
+  if (_fetchingEdge.has(key)) {
+    ttsLog('preloadEdge: reusing in-progress fetch', { key: key.slice(0,50) });
+    return _fetchingEdge.get(key);
+  }
   const params = new URLSearchParams({ text: text.slice(0,500), voice: voiceId, speed: spd });
-  return fetch('/tts?' + params.toString())
+  const promise = fetch('/tts?' + params.toString())
     .then(r => {
       if (!r.ok) { ttsLog('preloadEdge HTTP error', r.status, r.statusText); return Promise.reject('tts http ' + r.status); }
       ttsLog('preloadEdge HTTP ok, content-type:', r.headers.get('content-type'));
@@ -5348,6 +5366,7 @@ function preloadEdge(text, voiceId, speed) {
       ttsLog('preloadEdge blob size:', blob.size, 'type:', blob.type);
       const url = URL.createObjectURL(blob);
       _edgeBlobCache.set(key, url);
+      _fetchingEdge.delete(key);
       // נקה cache ישן
       if (_edgeBlobCache.size > 80) {
         const oldKey = _edgeBlobCache.keys().next().value;
@@ -5356,7 +5375,9 @@ function preloadEdge(text, voiceId, speed) {
       }
       return url;
     })
-    .catch(() => null);
+    .catch(e => { _fetchingEdge.delete(key); ttsLog('preloadEdge fetch error', String(e)); return null; });
+  _fetchingEdge.set(key, promise);
+  return promise;
 }
 
 // compat shim — קוד ישן שקורא ל-speakEdge ישירות (countdown speakCdWord)
