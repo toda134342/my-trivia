@@ -2122,19 +2122,21 @@ function showCountdown(mode, onDone, introText) {
 
 // ========== FIRST ANSWER ANIMATION ==========
 function showFirstAnimation(playerName, color) {
+  // ✅ יצירה דינמית של banner אם לא קיים (האלמנט לא ב-HTML הסטטי, רק ב-CSS)
+  let banner = document.getElementById('first-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'first-banner';
+    banner.innerHTML = '<div style="text-align:center;padding:24px 40px;background:rgba(10,12,30,0.92);border-radius:20px;border:2px solid var(--gold,#f5c842);box-shadow:0 0 40px rgba(245,200,66,0.3);"><div style=\'font-size:1rem;color:var(--gold,#f5c842);margin-bottom:6px;font-weight:600;\'>🥇 ראשון!</div><div id=\'first-name\' class=\'first-name\' style=\'font-size:2rem;font-weight:900;color:var(--gold,#f5c842);font-family:var(--font-heb,sans-serif);\'></div></div>';
+    document.body.appendChild(banner);
+  }
   const el = document.getElementById('first-name');
-  if (!el) { ttsLog('showFirstAnimation: #first-name not found, skip'); return; }
+  if (!el) { ttsLog('showFirstAnimation: could not create #first-name'); return; }
   el.textContent = playerName;
-  document.getElementById('first-name').style.color = color || 'var(--gold)';
-  const banner = document.getElementById('first-banner');
+  el.style.color = color || 'var(--gold,#f5c842)';
   banner.style.display = 'flex';
-
-  // Spawn particles
   spawnParticles(color || '#f5c842');
-
-  setTimeout(() => {
-    banner.style.display = 'none';
-  }, 2200);
+  setTimeout(() => { banner.style.display = 'none'; }, 2200);
 }
 
 function spawnParticles(color) {

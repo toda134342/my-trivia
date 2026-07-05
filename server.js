@@ -498,7 +498,7 @@ function showQuestion() {
     const nums = ['אחת','שתיים','שלוש','ארבע'];
     const answersText = (q.a || []).map((a, i) => `${nums[i]}... ${a}`).join('... ');
     const qText = (q.q + '... ' + answersText).slice(0, 500);
-    const qVoice = (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    const qVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
     [1.0, 1.3].forEach(spd => fetchTTS(qText, qVoice, spd).catch(() => {}));
     log('🔮', `pre-warming שאלה ${currentQuestion + 1}: "${qText.slice(0, 50)}" [voice=${qVoice}]`);
   })();
@@ -548,7 +548,7 @@ function beginAnswerWindow(roundId, timeLimit) {
   const q = questions[currentQuestion];
   if (q) {
     const revealText = `התשובה הנכונה היא: ${q.a[q.correct]}`;
-    const voice = (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    const voice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
     [1.0, 1.3].forEach(spd => fetchTTS(revealText, voice, spd).catch(() => {}));
     log('🔊', `pre-warming reveal TTS (${timeLimit}s מראש): "${revealText.slice(0,40)}" [voice=${voice}]`);
   }
@@ -595,7 +595,7 @@ function revealAnswer() {
     const nums = ['אחת','שתיים','שלוש','ארבע'];
     const answersText = (nextQ.a || []).map((a, i) => `${nums[i]}... ${a}`).join('... ');
     const nextText = (nextQ.q + '... ' + answersText).slice(0, 500);
-    const nextVoice = (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    const nextVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
     [1.0, 1.3].forEach(spd => fetchTTS(nextText, nextVoice, spd).catch(() => {}));
     log('🔮', `pre-warming שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
   }
@@ -1075,6 +1075,7 @@ function _speedFactorToRateOffset(baseRatePct, speedFactor) {
 // ===== Cache + תור =====
 const _ttsCache = new Map();
 const _fetchingTTSInProgress = new Map(); // ✅ dedup: מונע ייצור כפול של TTS זהה במקביל
+let _lastClientVoice = null; // ✅ הקול האחרון שהלקוח ביקש — משמש ל-pre-warm
 const TTS_CACHE_MAX = 200;
 const MAX_CONCURRENT_TTS = 3;
 let _ttsActiveCount = 0;
@@ -1248,6 +1249,8 @@ app.get('/tts', async (req, res) => {
   const text  = (req.query.text || '').slice(0, 500).trim();
   const key   = req.query.voice || 'edge:avri';
   const speed = Math.min(2.0, Math.max(0.5, parseFloat(req.query.speed) || 1.0));
+  // ✅ עוקב אחרי הקול האחרון שהלקוח ביקש — לשימוש ב-pre-warm
+  if (key && key !== _lastClientVoice) { _lastClientVoice = key; log('🔊', `קול לקוח עודכן: ${key}`); }
   if (!text) return res.status(400).send('missing text');
   try {
     const { data, mime } = await fetchTTS(text, key, speed);
