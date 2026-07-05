@@ -1361,7 +1361,8 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
         </select>
         <button class="sbtn" id="btn-sfx" onclick="toggleSfx()" title="צלילים">🔊</button>
         <button class="sbtn" id="btn-tts-game" onclick="toggleTTSGame()" title="הקראה">📢</button>
-        <button class="sbtn" onclick="saveTTSLogs()" title="שמור לוגים TTS">📋</button>
+        <button class="sbtn" onclick="saveTTSLogs()" title="הורד לוגים">📋</button>
+        <button class="sbtn" onclick="toggleFullscreen()" title="מסך מלא" id="btn-fullscreen">⛶</button>
         <button class="sbtn" onclick="goAdmin()" title="ניהול">⚙️</button>
       </div>
     </div>
@@ -1391,13 +1392,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
   🔊 לחץ כאן להפעלת הקריין (אנדרואיד/מקרן)
 </div>
 
-<!-- כפתור צף — פתיחת מסך לוגים -->
-<button id="btn-open-logs" onclick="window.open('/logs/page', '_blank')" title="צפה בלוגים"
-  style="position:fixed;bottom:16px;right:16px;z-index:9996;width:46px;height:46px;border-radius:50%;
-    background:var(--s1,#1c2030);border:1px solid var(--border,#2a2e3a);color:var(--text,#e6e6e6);
-    font-size:1.2rem;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,0.3);display:flex;
-    align-items:center;justify-content:center;opacity:0.85;">📋</button>
-
+<!-- כפתור צף מוסר — הלוגים נגישים דרך 📋 בסרגל הכלים למעלה -->
 
 <!-- CUSTOM GAME MANAGER -->
 <div id="custom-game-overlay" style="display:none;position:fixed;inset:0;z-index:55;background:var(--bg);flex-direction:column;align-items:center;padding:20px;overflow-y:auto;">
@@ -1714,7 +1709,12 @@ let actx = null;
 let musicOsc = null, musicGain = null;
 let sfxOn = true, musicOn = true, musicPlaying = false;
 
-function getAC() { if (!actx) actx = new AC(); return actx; }
+function getAC() {
+  if (!actx) { actx = new AC(); }
+  // ✅ תיקון first-game: תמיד מנסה לחדש את ה-AudioContext אם הוא suspended
+  if (actx.state === 'suspended') { actx.resume().catch(()=>{}); }
+  return actx;
+}
 
 function tone(f, d, t='sine', v=0.28) {
   if (!sfxOn) return;
@@ -3717,15 +3717,7 @@ setInterval(() => {
   }
 }, 2000);
 
-// אירועים ש"אמורים" להגיע רק כשהמשחק פעיל אצל הלקוח (gameState==='playing').
-// אם אחד מהם מגיע אחרי שהמשחק כבר נעצר מבחינת הלקוח — זה בדיוק "לחצתי עצור אבל המשחק ממשיך":
-// כנראה SSE ישן/מנותק־מחדש עדיין שולח אירועים מהמשחק הקודם, או שיש התנגשות מצב client/server.
-const _PLAYING_ONLY_EVENT_TYPES_CLIENT = new Set(['question','startTimer','reveal','allAnswered','playerEliminated']);
 function handle(d){
-  if (_PLAYING_ONLY_EVENT_TYPES_CLIENT.has(d.type) && gameState !== 'playing') {
-    ttsLog('🚨 EVENT אחרי עצירה — התקבל אירוע משחק כשgameState≠playing', { type: d.type, localGameState: gameState, roundId: d.roundId || d.revealRoundId || 'n/a' });
-    if (typeof serverLog === 'function') serverLog('🚨', `לקוח קיבל "${d.type}" כש-gameState="${gameState}" (לא playing) — ייתכן שהמשחק "נעצר" רק ויזואלית`);
-  }
   switch(d.type){
     case 'settings-changed':
       // עדכון חי מהשרת — הגדרה שונתה במחשב אחר, מוחל כאן מיידית בלי רענון דף
@@ -3808,12 +3800,16 @@ function handle(d){
       buildProgress(d.index,d.total);updateStatus();
       startMusic();
       if(ttsOn) {
-        // preload לblob cache מיד — כשהספירה נגמרת הניגון מיידי
+        // preload לblob cache מיד — אם השרת כבר pre-warm את השאלה הזו (מ-revealAnswer של השאלה הקודמת),
+        // preloadEdge יחזיר מיידית מהמטמון ← אין המתנה לניגון
         if (isEdgeVoice(selectedVoiceName)) {
           const nums = ['אחת','שתיים','שלוש','ארבע'];
           const answersText = (d.answers||[]).map((a,i)=>`${nums[i]}... ${stripEmoji(a)}`).join('... ');
           const fullText = stripEmoji(d.question||'') + (answersText ? ('... '+answersText) : '');
-          preloadEdge(fullText.slice(0,500), selectedVoiceName, EDGE_SPEED);
+          const cacheKey = selectedVoiceName + '|' + EDGE_SPEED + '|' + fullText.slice(0,500);
+          const wasPrewarmed = _edgeBlobCache.has(cacheKey);
+          ttsLog('case question: preload', { wasPrewarmed, key: cacheKey.slice(0,60) });
+          if (!wasPrewarmed) preloadEdge(fullText.slice(0,500), selectedVoiceName, EDGE_SPEED);
         }
         if (countdownActive) {
           ttsLog('case question: countdownActive → _pendingSpeak', { q: (d.question||'').slice(0,40) });
@@ -5095,12 +5091,16 @@ let _ttsUnlocked = false;
 function unlockTTS() {
   if (_ttsUnlocked) return;
   _ttsUnlocked = true;
-  // ניגון שקט קצר כדי "לפתוח" את ה-AudioContext/Audio בדפדפנים סלולריים
+  // ✅ תיקון first-game: AudioContext נוצר ב-"suspended" state בדפדפנים מודרניים.
+  // הוא לא מנגן עד שהמשתמש מבצע אינטראקציה. resume() מבטיח שיפעל מהאינטראקציה הראשונה.
+  try { if (actx) actx.resume().catch(()=>{}); } catch {}
+  // נסיון שקט לפתוח ניגון HTML Audio (עבור iOS ואנדרואיד)
   try {
     const a = new Audio();
     a.volume = 0;
     a.play().catch(() => {});
   } catch {}
+  ttsLog('unlockTTS: audio unlocked on first interaction');
 }
 document.addEventListener('click', unlockTTS, {once: false});
 document.addEventListener('touchstart', unlockTTS, {once: false});
@@ -5179,19 +5179,62 @@ window.ttsDump = () => {
   })));
 };
 
+// ========== FULLSCREEN ==========
+function toggleFullscreen() {
+  const btn = document.getElementById('btn-fullscreen');
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().then(() => {
+      if (btn) btn.textContent = '⛶';
+    }).catch(e => ttsLog('fullscreen error', e.message));
+  } else {
+    document.exitFullscreen().then(() => {
+      if (btn) btn.textContent = '⛶';
+    }).catch(()=>{});
+  }
+}
+document.addEventListener('fullscreenchange', () => {
+  const btn = document.getElementById('btn-fullscreen');
+  if (btn) btn.textContent = document.fullscreenElement ? '✕' : '⛶';
+});
+
+// ========== SAVE COMBINED LOGS (TTS client + server) ==========
 function saveTTSLogs() {
   if (!TTS_LOG.length) { alert('אין לוגים עדיין — הרץ משחק קודם'); return; }
-  const lines = TTS_LOG.map(e => {
+  // Client-side TTS logs
+  const ttsLines = TTS_LOG.map(e => {
     const time = new Date(e.t).toISOString().substr(11, 12);
     const data = e.data !== undefined ? '  →  ' + JSON.stringify(e.data) : '';
-    return `[${time}] ${e.msg}${data}`;
+    return `[${time}] [client] ${e.msg}${data}`;
   });
-  lines.unshift('=== TTS LOGS — ' + new Date().toLocaleString('he-IL') + ' ===');
-  lines.unshift('voice=' + (selectedVoiceName||'none') + '  ttsOn=' + ttsOn + '  _ttsSeq=' + _ttsSeq);
-  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  ttsLines.unshift('=== TTS LOGS — ' + new Date().toLocaleString('he-IL') + ' ===');
+  ttsLines.unshift('voice=' + (selectedVoiceName||'none') + '  ttsOn=' + ttsOn + '  _ttsSeq=' + _ttsSeq);
+
+  // Also fetch server logs and combine
+  fetch('/logs').then(r => r.json()).then(serverLogs => {
+    const serverLines = (Array.isArray(serverLogs) ? serverLogs : []).map(e => {
+      const time = new Date(e.ts).toISOString().substr(11, 12);
+      return `[${time}] [server] ${e.emoji||''} ${e.msg||''}`;
+    });
+    const allLines = [
+      '=== COMBINED LOGS (client + server) — ' + new Date().toLocaleString('he-IL') + ' ===',
+      'voice=' + (selectedVoiceName||'none') + '  ttsOn=' + ttsOn,
+      '', '--- CLIENT TTS LOGS ---',
+      ...ttsLines,
+      '', '--- SERVER LOGS ---',
+      ...serverLines
+    ];
+    _downloadText(allLines.join('\n'), 'trivia-logs-' + new Date().toISOString().substr(0,19).replace(/:/g,'-') + '.txt');
+  }).catch(() => {
+    // fallback: TTS only
+    _downloadText(ttsLines.join('\n'), 'tts-logs-' + new Date().toISOString().substr(0,19).replace(/:/g,'-') + '.txt');
+  });
+}
+
+function _downloadText(text, filename) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'tts-logs-' + new Date().toISOString().substr(0,19).replace(/:/g,'-') + '.txt';
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -5221,13 +5264,11 @@ function cancelAllSpeech() {
   }
   _ttsQueue = []; _ttsBusy = false;
   if (typeof hideNarratorDim === 'function') hideNarratorDim();
-  // ✅ רשת ביטחון: אם פאנל בחירת קול נשאר פתוח ומתנגן ברקע כשהמשחק נעצר/מסתיים,
-  // גם הוא נעצר כאן — כדי שלא יישאר "קול רקע" אחרי עצירת המשחק.
-  if (typeof stopVoicePreview === 'function') stopVoicePreview('cancelAllSpeech');
 }
 
 function _ttsPlay(text, pri, onEnd) {
-  const priName = Object.keys(TTS_PRI).find(k => TTS_PRI[k] === pri) || pri;
+  // שם עדיפות לצורך לוג — PLAYER ו-QUESTION שניהם = 2, מציגים שם לפי הקשר
+  const priName = pri === TTS_PRI.QUESTION ? (window._ttsIsQuestionAudio ? 'QUESTION' : 'PLAYER') : (pri === 0 ? 'LOW' : String(pri));
   if (!ttsOn) { ttsLog(`_ttsPlay SKIP — ttsOn=false`, { pri: priName }); onEnd && onEnd(); return; }
   if (window._ttsBlocked) { ttsLog(`_ttsPlay SKIP — _ttsBlocked`, { pri: priName }); onEnd && onEnd(); return; }
   if (!text) { ttsLog(`_ttsPlay SKIP — empty text`, { pri: priName }); onEnd && onEnd(); return; }
@@ -7742,14 +7783,12 @@ function openVoicePanel() {
 }
 
 function closeVoicePanel() {
-  stopVoicePreview('panel closed');
   vpPendingVoice = null;
   document.getElementById('voice-panel-overlay').style.display = 'none';
   document.getElementById('voice-panel').style.display = 'none';
 }
 
 function confirmVoicePanel() {
-  stopVoicePreview('panel confirmed');
   if (vpPendingVoice) {
     setVoice(vpPendingVoice);
   }
@@ -7771,43 +7810,14 @@ function selectVoiceFromPanel(id, btn) {
   }
 }
 
-// ✅ תיקון: קול-רקע כפול בפאנל הקולות — לפני התיקון, כל לחיצה על ▶ יצרה
-// Audio() חדש בלי לעצור את הקודם. אם המשתמש בדק כמה קולות ברצף (או לחץ פעמיים
-// על אותו קול), כמה קטעי שמע התנגנו זה על זה במקביל — זה בדיוק "עוד קולות ברקע"
-// שדווח. עכשיו יש מעקב יחיד (_previewAudio) שעוצר כל תצוגה מקדימה קודמת לפני שמתחילה חדשה.
-let _previewAudio = null;
-let _previewSeq = 0;
-function stopVoicePreview(reason) {
-  if (_previewAudio) {
-    ttsLog('stopVoicePreview — עוצר תצוגה מקדימה קודמת', { reason, wasPlaying: !_previewAudio.paused, src: _previewAudio.src });
-    try { _previewAudio.onended = null; _previewAudio.onerror = null; _previewAudio.pause(); _previewAudio.currentTime = 0; } catch {}
-    _previewAudio = null;
-  }
-}
 function testPendingVoice(id) {
   unlockTTS();
-  const seq = ++_previewSeq;
-  // עוצרים כל תצוגה מקדימה קודמת שעדיין מתנגנת/נטענת — מונע חפיפת קולות ברקע
-  stopVoicePreview('new preview requested: ' + id);
   const sampleText = 'שלום! זהו הקול שנבחר למשחק.';
   const params = new URLSearchParams({ text: sampleText, voice: id });
-  ttsLog('testPendingVoice START', { seq, id, url: '/tts?' + params.toString() });
   const audio = new Audio('/tts?' + params);
-  _previewAudio = audio;
-  audio.onended = () => {
-    ttsLog('testPendingVoice ended naturally', { seq, id });
-    if (_previewAudio === audio) _previewAudio = null;
-  };
-  audio.onerror = (e) => {
-    ttsLog('testPendingVoice audio error', { seq, id, error: e?.message || String(e) });
-    if (_previewAudio === audio) _previewAudio = null;
-  };
-  audio.play()
-    .then(() => ttsLog('testPendingVoice play() OK', { seq, id }))
-    .catch((err) => {
-      ttsLog('testPendingVoice play failed', { seq, id, error: err?.message || String(err) });
-      if (_previewAudio === audio) _previewAudio = null;
-    });
+  audio.play().catch(() => {
+    ttsLog('testPendingVoice play failed', id);
+  });
 }
 
 function renderVoiceList() {

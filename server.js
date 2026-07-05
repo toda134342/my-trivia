@@ -242,14 +242,7 @@ function shuffle(arr) {
   return a;
 }
 
-// טיפוסי אירוע ש"אמורים" לקרות רק כשהמשחק פעיל בפועל (gameState === 'playing').
-// אם אחד מהם משודר בזמן שהמשחק כבר לא playing — כמעט תמיד סימן ל"עצרתי אבל המשחק ממשיך":
-// טיימר/setTimeout ישן שלא נוקה כראוי ב-/stop עדיין רץ ומגיע להשלמתו.
-const _PLAYING_ONLY_EVENT_TYPES = new Set(['question', 'startTimer', 'reveal', 'allAnswered', 'playerEliminated']);
 function broadcast(data) {
-  if (_PLAYING_ONLY_EVENT_TYPES.has(data.type) && gameState !== 'playing') {
-    log('🚨', `broadcast חריג: אירוע "${data.type}" נשלח כשgameState="${gameState}" (לא playing) — כנראה טיימר ישן שלא נוקה כראוי ב-/stop או ב-/next ממשיך לרוץ. roundId=${data.roundId || data.revealRoundId || 'n/a'}`);
-  }
   const msg = `data: ${JSON.stringify(data)}\n\n`;
   clients = clients.filter(c => { try { c.write(msg); return true; } catch { return false; } });
 }
@@ -582,6 +575,19 @@ function revealAnswer() {
     log('🕰️', `סנכרון קריין/טיימר: לא התקבל narrator-ready לשאלה הזו לפני שהתשובה התגלתה (elapsed=${elapsedSinceQuestionStart}ms, timeLimit=${timeLimit}ש') — ייתכן שזה קרה דרך ה-fallback`);
   }
   log('💡', `תשובה: ${q.a[q.correct]}`);
+
+  // ✅ pre-warm שאלה הבאה: הזמן עד לשאלה הבאה (~4-7 שניות) מספיק לייצור TTS.
+  // כך כשהלקוח יקבל את השאלה הבאה ויקרא preloadEdge, האודיו כבר יהיה במטמון
+  // ויוחזר מיידית במקום לחכות 6-8 שניות לייצור.
+  const nextQ = questions[currentQuestion + 1];
+  if (nextQ) {
+    const nums = ['אחת','שתיים','שלוש','ארבע'];
+    const answersText = (nextQ.a || []).map((a, i) => `${nums[i]}... ${a}`).join('... ');
+    const nextText = (nextQ.q + '... ' + answersText).slice(0, 500);
+    const nextVoice = (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    [1.0, 1.3].forEach(spd => fetchTTS(nextText, nextVoice, spd).catch(() => {}));
+    log('🔮', `pre-warming שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
+  }
 
   // roundId חדש לשלב ה-reveal, כדי שהלקוח יוכל לדווח בחזרה מתי הקריין סיים להקריא
   // את "התשובה הנכונה היא..." (ראו /reveal-narrator-done ו-advanceToNextQuestion).
@@ -1070,29 +1076,7 @@ function _ttsDrainQueue() {
   }
 }
 
-// ===== לוג מורחב: זיהוי בקשות TTS כפולות/חופפות =====
-// אם אותו טקסט+קול מתבקשים פעמיים בפער קצר, כנראה שני נגנים יפעלו במקביל אצל הלקוח
-// ("קולות ברקע"). זה לא תמיד באג (יכולים להיות 2 מכשירים בחדר), אבל שווה לוג ברור כדי
-// לדעת אם זה קורה מאותו קורא (client) פעמיים ברצף.
-const _ttsRecentRequests = new Map(); // key: text+voice → timestamp אחרון
-const TTS_DUPLICATE_WINDOW_MS = 4000;
-function _checkDuplicateTTSRequest(text, voiceKey, speed) {
-  const key = voiceKey + '|' + speed + '|' + text.slice(0, 80);
-  const now = Date.now();
-  const prev = _ttsRecentRequests.get(key);
-  _ttsRecentRequests.set(key, now);
-  if (_ttsRecentRequests.size > 500) {
-    // ניקוי בסיסי כדי שהמפה לא תגדל ללא הגבלה
-    const cutoff = now - 60000;
-    for (const [k, t] of _ttsRecentRequests) if (t < cutoff) _ttsRecentRequests.delete(k);
-  }
-  if (prev != null && (now - prev) < TTS_DUPLICATE_WINDOW_MS) {
-    log('⚠️', `בקשת TTS כפולה תוך ${now - prev}ms לאותו טקסט+קול — סיכוי לחפיפת קולות ברקע אצל הלקוח [voice=${voiceKey} speed=${speed}]: "${text.slice(0,50)}"`);
-  }
-}
-
 function fetchTTSOnce(text, voiceKey, speed) {
-  _checkDuplicateTTSRequest(text, voiceKey, speed || 1.0);
   return _ttsRunQueued(() => _fetchTTSOnceRaw(text, voiceKey, speed));
 }
 
