@@ -5200,33 +5200,36 @@ document.addEventListener('fullscreenchange', () => {
 // ========== SAVE COMBINED LOGS (TTS client + server) ==========
 function saveTTSLogs() {
   if (!TTS_LOG.length) { alert('אין לוגים עדיין — הרץ משחק קודם'); return; }
-  // Client-side TTS logs
-  const ttsLines = TTS_LOG.map(e => {
+  const header = '=== COMBINED LOGS (client + server) — ' + new Date().toLocaleString('he-IL') + ' ===';
+  const meta = 'voice=' + (selectedVoiceName||'none') + '  ttsOn=' + ttsOn + '  _ttsSeq=' + _ttsSeq;
+
+  const clientLines = TTS_LOG.map(e => {
     const time = new Date(e.t).toISOString().substr(11, 12);
     const data = e.data !== undefined ? '  →  ' + JSON.stringify(e.data) : '';
     return `[${time}] [client] ${e.msg}${data}`;
   });
-  ttsLines.unshift('=== TTS LOGS — ' + new Date().toLocaleString('he-IL') + ' ===');
-  ttsLines.unshift('voice=' + (selectedVoiceName||'none') + '  ttsOn=' + ttsOn + '  _ttsSeq=' + _ttsSeq);
 
-  // Also fetch server logs and combine
   fetch('/logs').then(r => r.json()).then(serverLogs => {
-    const serverLines = (Array.isArray(serverLogs) ? serverLogs : []).map(e => {
-      const time = new Date(e.ts).toISOString().substr(11, 12);
-      return `[${time}] [server] ${e.emoji||''} ${e.msg||''}`;
-    });
+    // סנן רק לוגים מהסשן הנוכחי (שעה אחרונה)
+    const cutoff = Date.now() - 3600000;
+    const serverLines = (Array.isArray(serverLogs) ? serverLogs : [])
+      .filter(e => !e.ts || new Date(e.ts).getTime() > cutoff)
+      .map(e => {
+        const time = new Date(e.ts).toISOString().substr(11, 12);
+        return `[${time}] [server] ${e.emoji||''} ${e.msg||''}`;
+      });
     const allLines = [
-      '=== COMBINED LOGS (client + server) — ' + new Date().toLocaleString('he-IL') + ' ===',
-      'voice=' + (selectedVoiceName||'none') + '  ttsOn=' + ttsOn,
-      '', '--- CLIENT TTS LOGS ---',
-      ...ttsLines,
-      '', '--- SERVER LOGS ---',
+      header, meta, '',
+      '--- CLIENT LOGS ---',
+      ...clientLines,
+      '',
+      '--- SERVER LOGS (שעה אחרונה) ---',
       ...serverLines
     ];
     _downloadText(allLines.join('\n'), 'trivia-logs-' + new Date().toISOString().substr(0,19).replace(/:/g,'-') + '.txt');
   }).catch(() => {
-    // fallback: TTS only
-    _downloadText(ttsLines.join('\n'), 'tts-logs-' + new Date().toISOString().substr(0,19).replace(/:/g,'-') + '.txt');
+    _downloadText([header, meta, '', '--- CLIENT LOGS ---', ...clientLines].join('\n'),
+      'tts-logs-' + new Date().toISOString().substr(0,19).replace(/:/g,'-') + '.txt');
   });
 }
 
@@ -5299,10 +5302,12 @@ function _ttsPlay(text, pri, onEnd) {
 
   // fallback קצר — אם השרת לא ענה תוך זמן סביר, ממשיכים מיד למשחק במקום לתקוע את המסך
   // (גם עם 3 ניסיונות בצד שרת, כל ניסיון הוא עד ~12 שניות; חיכינו פעם ל-25 שניות וזה היה נראה כאילו המשחק תקוע)
+  // ✅ fallback 12s: הוגדל מ-6 כדי לתת לשרת זמן לייצר TTS (edge-tts לוקח 5-15 שניות לטקסט ארוך).
+  // אם הייצור לא הסתיים תוך 12 שניות — מניחים כשל ומתחילים טיימר בכל זאת.
   _ttsFallback = setTimeout(() => {
     ttsLog(`_ttsPlay FALLBACK FIRED`, { seq, pri: priName, text: text.slice(0,40) });
     done();
-  }, 6000);
+  }, 12000);
 
   _ttsPlayServer(text, selectedVoiceName, done);
 }
@@ -5383,6 +5388,8 @@ function _ttsPlayServer(text, voiceId, done) {
     ttsLog('Server: fetching TTS (cache miss, key:', key.slice(0,60) + ')');
     preloadEdge(cacheText, voiceId, spd).then(url => {
       if (!url) { ttsLog('Server: TTS fetch failed — no audio'); notifyTtsFailure(); done(); return; }
+      // ✅ בדיקת stale: אם ה-fetch ארך זמן ובינתיים הופסק המשחק/TTS (seq השתנה) — לא מנגנים
+      if (_ttsSeq !== seq) { ttsLog('Server: TTS fetch done but seq changed (cancelled), discarding', { fetchedSeq: seq, currentSeq: _ttsSeq }); return; }
       ttsLog('Server: fetch OK, playing');
       doPlay(url);
     }).catch(e => { ttsLog('Server: preloadEdge error', e?.message); notifyTtsFailure(); done(); });

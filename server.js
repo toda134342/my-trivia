@@ -491,6 +491,17 @@ function showQuestion() {
   clearInterval(questionTickInterval);
   clearTimeout(narratorFallbackTimer); narratorFallbackTimer = null;
   pendingAnswerWindow = null;
+
+  // ✅ pre-warm השאלה הנוכחית מיידית — חשוב במיוחד לשאלה 1 (אין pre-warm מה-reveal הקודמת).
+  // הספירה לאחור (3-8 שניות) נותנת לשרת זמן לייצר ולשמור TTS במטמון לפני שהלקוח יבקש אותו.
+  (() => {
+    const nums = ['אחת','שתיים','שלוש','ארבע'];
+    const answersText = (q.a || []).map((a, i) => `${nums[i]}... ${a}`).join('... ');
+    const qText = (q.q + '... ' + answersText).slice(0, 500);
+    const qVoice = (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    [1.0, 1.3].forEach(spd => fetchTTS(qText, qVoice, spd).catch(() => {}));
+    log('🔮', `pre-warming שאלה ${currentQuestion + 1}: "${qText.slice(0, 50)}" [voice=${qVoice}]`);
+  })();
   broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit, roundId });
   log('🎙️', `שאלה ${currentQuestion + 1}: ממתין ל-narrator-ready (roundId=${roundId}) לפני הפעלת הטיימר האמיתי — fallback אם לא מגיע תוך ${NARRATOR_FALLBACK_MS}ms`);
 
@@ -838,8 +849,19 @@ function stopAllTimers() {
 
 app.get('/stop', (req, res) => {
   stopAllTimers();
+  // ✅ תיקון כפתור עצור: עצור + איפוס מלא בלחיצה אחת — אין צורך ב"כניסה מחדש" ו"איפוס" נפרד
   gameState = 'lobby';
+  currentQuestion = 0;
+  firstCorrect = null;
+  answerWindowStartedFor = null;
+  revealRoundId = null;
+  Object.values(players).forEach(p => {
+    p.score = 0; p.correct = 0; p.answered = false;
+    p._chosen = null; p._eliminated = false; p._team = null; p._streak = 0;
+  });
+  log('⏹️', 'משחק נעצר ואופס (ניקוי ניקודים + שאלה נוכחית)');
   broadcast({ type: 'stopped' });
+  broadcast({ type: 'reset', players: Object.values(players) });
   res.send('stopped');
 });
 
@@ -1052,6 +1074,7 @@ function _speedFactorToRateOffset(baseRatePct, speedFactor) {
 
 // ===== Cache + תור =====
 const _ttsCache = new Map();
+const _fetchingTTSInProgress = new Map(); // ✅ dedup: מונע ייצור כפול של TTS זהה במקביל
 const TTS_CACHE_MAX = 200;
 const MAX_CONCURRENT_TTS = 3;
 let _ttsActiveCount = 0;
@@ -1194,21 +1217,31 @@ function logTtsError(emoji, fullMsg) {
 async function fetchTTS(text, voiceKey, speed = 1.0) {
   const cacheKey = voiceKey + '|' + speed + '|' + text;
   if (_ttsCache.has(cacheKey)) return _ttsCache.get(cacheKey);
-
-  let lastErr;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const result = await fetchTTSOnce(text, voiceKey, speed);
-      if (_ttsCache.size >= TTS_CACHE_MAX) _ttsCache.delete(_ttsCache.keys().next().value);
-      _ttsCache.set(cacheKey, result);
-      return result;
-    } catch (err) {
-      lastErr = err;
-      logTtsError('⚠️', `TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
-      if (attempt < 3) await new Promise(r => setTimeout(r, 400 * attempt));
-    }
+  // ✅ dedup: אם ייצור זהה כבר בתהליך (pre-warm + בקשת לקוח במקביל) — מחכים לאותו Promise
+  // לפני התיקון: pre-warm ובקשת לקוח יצרו שתי קריאות edge-tts נפרדות → כפל ייצור, עיכוב כפול
+  if (_fetchingTTSInProgress.has(cacheKey)) {
+    log('🔁', `fetchTTS dedup: ממתין ל-fetch פעיל עבור "${text.slice(0,30)}" [${voiceKey}]`);
+    return _fetchingTTSInProgress.get(cacheKey);
   }
-  throw lastErr;
+  const promise = (async () => {
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const result = await fetchTTSOnce(text, voiceKey, speed);
+        if (_ttsCache.size >= TTS_CACHE_MAX) _ttsCache.delete(_ttsCache.keys().next().value);
+        _ttsCache.set(cacheKey, result);
+        return result;
+      } catch (err) {
+        lastErr = err;
+        logTtsError('⚠️', `TTS ניסיון ${attempt}/3 נכשל [${voiceKey}] "${text.slice(0,30)}": ${err.message}`);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 400 * attempt));
+      }
+    }
+    throw lastErr;
+  })();
+  _fetchingTTSInProgress.set(cacheKey, promise);
+  promise.finally(() => _fetchingTTSInProgress.delete(cacheKey));
+  return promise;
 }
 
 app.get('/tts', async (req, res) => {
