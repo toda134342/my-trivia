@@ -3812,6 +3812,7 @@ function handle(d){
 
     case 'question':
       ttsLog('case question', { roundId: d.roundId, ttsOn, countdownActive, q: (d.question||'').slice(0,40) });
+      applyPendingVoiceSettings(); // ✅ אם הצטבר שינוי קול תוך כדי הסיבוב הקודם — עכשיו, בין שאלה לשאלה, הרגע הבטוח להחיל אותו
       stopTimer(); // ✅ עוצרים טיימר ישן לפני שהשאלה החדשה מתחילה (מונע interval ישן שממשיך לרוץ)
       currentQ=d;gameMode=d.mode||gameMode;correctAns=null;
       Object.values(players).forEach(p=>{p.answered=false;p._chosen=null;p._first=false;});
@@ -4303,6 +4304,7 @@ function renderQuestion(d){
       <div class="tbar"><div class="tfill" id="tfill"></div></div>
     </div>
     <div class="agrid" id="agrid"></div>
+    <div id="answered-count" style="text-align:center;margin-top:10px;color:var(--muted);font-size:0.95rem"></div>
   `;
   renderAnswers(null);
 }
@@ -4318,14 +4320,32 @@ function renderAnswers(correct){
   let topVote=-1;
   if(isVote&&correct===-1&&total>0) topVote=counts.indexOf(Math.max(...counts));
 
+  // ✅ תיקון: כל עוד לא הגיע reveal (correct===null) — אסור לחשוף על המסך מי בחר מה
+  // (לא sel, לא ספירה, לא אחוזים). המסך נשאר ניטרלי בזמן שהשחקנים עונים,
+  // וההצבעות/הבחירות מתגלות רק ברגע ה-reveal יחד עם התשובה הנכונה.
+  const revealed = correct!==null;
+
+  // ✅ מונה כללי בלבד — כמה שחקנים ענו בסה"כ, בלי לחשוף איזו תיבה נבחרה
+  const acEl = document.getElementById('answered-count');
+  if (acEl) {
+    if (revealed) {
+      acEl.textContent = '';
+    } else {
+      const active = Object.values(players).filter(p=>!p._eliminated);
+      const answeredCount = active.filter(p=>p.answered).length;
+      acEl.textContent = active.length ? `${answeredCount} מתוך ${active.length} ענו` : '';
+    }
+  }
+
   grid.innerHTML=currentQ.answers.map((ans,i)=>{
     let cls='abtn';
-    if(isVote){
-      if(correct===-1&&i===topVote) cls+=' vote-top';
-      else if(counts[i]>0) cls+=' sel';
-    } else {
-      if(correct!==null){if(i===correct) cls+=' ok';else if(counts[i]>0) cls+=' ko';}
-      else if(counts[i]>0) cls+=' sel';
+    if(revealed){
+      if(isVote){
+        if(i===topVote) cls+=' vote-top';
+        else if(counts[i]>0) cls+=' sel';
+      } else {
+        if(i===correct) cls+=' ok';else if(counts[i]>0) cls+=' ko';
+      }
     }
     const pct=total>0?Math.round(counts[i]/total*100):0;
     // ✅ לחיצה ידנית לאדמין — מאפשרת סימולציה/בדיקה מיידית ללא המתנה לקריין
@@ -4334,9 +4354,9 @@ function renderAnswers(correct){
       <div class="anum">${i+1}</div>
       <div class="abody">
         <div class="atext">${ans}</div>
-        ${counts[i]>0?`<div class="acnt">${counts[i]} בחרו${(correct!==null||isVote)?' · '+pct+'%':''}</div>`:''}
+        ${revealed&&counts[i]>0?`<div class="acnt">${counts[i]} בחרו · ${pct}%</div>`:''}
       </div>
-      ${!isVote&&correct!==null&&i===correct?'<div style="color:var(--green);font-size:1.1rem">✓</div>':''}
+      ${!isVote&&revealed&&i===correct?'<div style="color:var(--green);font-size:1.1rem">✓</div>':''}
       ${isVote&&i===topVote&&correct===-1?'<div style="color:var(--purple);font-size:1rem">👑</div>':''}
     </div>`;
   }).join('');
@@ -5931,6 +5951,10 @@ const NARRATOR_WRONG = [
 const NARRATOR_FIRST = [
   '{name} — ראשון! בזק!', '{name} הכי מהיר פה!', 'ראשון {name}! מדהים!',
 ];
+// ✅ ניטרלי — לא מגלה אם התשובה נכונה, נאמר בזמן אמת כשמישהו עונה
+const NARRATOR_ANSWERED = [
+  '{name} ענה!', '{name} בחר תשובה!', '{name} השיב!', 'יש תשובה מ{name}!', '{name} נעל תשובה!',
+];
 const NARRATOR_VOTE = [
   '{name} הצביע.', '{name} בחר.', 'הצבעה של {name} נרשמה.',
 ];
@@ -5943,20 +5967,21 @@ function narratePlayerAnswer(d) {
   const name = d.playerName || '';
   loadNarratorPhrases();
   let pool;
+  // ✅ תיקון: אסור לקריין לחשוף בזמן אמת אם התשובה נכונה/שגויה — זה מסגיר את התשובה
+  // הנכונה לכל השחקנים לפני שהזמן נגמר / לפני שכולם ענו. "נכון/לא נכון" נאמר רק
+  // ב-revealAnswer (case 'reveal'), לא כאן. first/streak/vote נשארים — הם לא חושפים תוכן תשובה.
   if (d.mode === 'vote') {
     pool = narratorPhrases.vote?.length ? narratorPhrases.vote : NARRATOR_VOTE;
   } else if (d.first) {
     pool = narratorPhrases.first?.length ? narratorPhrases.first : NARRATOR_FIRST;
   } else if (d.mode === 'blitz' && d.streak >= 3) {
     pool = narratorPhrases.streak?.length ? narratorPhrases.streak : NARRATOR_STREAK;
-  } else if (d.correct) {
-    pool = narratorPhrases.correct?.length ? narratorPhrases.correct : NARRATOR_CORRECT;
   } else {
-    pool = narratorPhrases.wrong?.length ? narratorPhrases.wrong : NARRATOR_WRONG;
+    pool = narratorPhrases.answered?.length ? narratorPhrases.answered : NARRATOR_ANSWERED;
   }
   const tmpl = pool[Math.floor(Math.random() * pool.length)];
   const text = tmpl.replace('{name}', name).replace('{streak}', d.streak || '');
-  speakQueued(text, 0.95, d.correct ? 1.15 : 0.9);
+  speakQueued(text, 0.95, 1.0);
 }
 
 // ========== NARRATOR MANAGER ==========
@@ -6667,6 +6692,23 @@ function _flushServerLog() {
 // מחיל הגדרות שהגיעו מהשרת על המשתנים בפועל בזיכרון — קרוא הן בטעינה הראשונית והן בעדכון חי (SSE)
 // זה התיקון המרכזי: בעבר selectedVoiceName/ttsOn/vpRate נקבעו פעם אחת מ-localStorage בזמן טעינת הסקריפט
 // ולא התעדכנו יותר גם כשהגיעו ערכים מהשרת — מה שגרם למחשב אחד "לא לקבל" שינוי שנעשה במחשב אחר.
+// ✅ תיקון: שינויי קול/קצב/גובה-קול שמגיעים תוך כדי סיבוב פעיל (gameState==='playing')
+// לא מוחלים על הקריין החי מיד — זה גרם לקריין "לקפוץ" לקול אחר באמצע המשחק סתם כי
+// מישהו שינה הגדרה כלשהי (אפילו לא קשורה לקול) במכשיר אחר. במקום זה השינוי נשמר
+// ומוחל בתחילת השאלה הבאה (ראו applyPendingVoiceSettings שנקראת מ-case 'question').
+let _pendingVoiceSettings = null;
+
+function applyPendingVoiceSettings() {
+  if (!_pendingVoiceSettings) return;
+  const p = _pendingVoiceSettings; _pendingVoiceSettings = null;
+  if (p.voice !== undefined)  selectedVoiceName = p.voice;
+  if (p.rate  !== undefined)  vpRate  = p.rate;
+  if (p.pitch !== undefined)  vpPitch = p.pitch;
+  if (p.tab   !== undefined)  vpTab   = p.tab;
+  if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
+  if (typeof renderVoiceList === 'function') renderVoiceList();
+}
+
 function applySettings(s) {
   if (!s) return;
   if (s['trivia_theme'] !== undefined) setTheme(s['trivia_theme'] || '');
@@ -6683,15 +6725,30 @@ function applySettings(s) {
     if (typeof rbSyncTTS === 'function') rbSyncTTS();
   }
 
+  const midRound = gameState === 'playing';
+
   if (s['trivia_voice']) {
-    selectedVoiceName = s['trivia_voice'];
-    try { localStorage.setItem('trivia_voice', selectedVoiceName); } catch {}
-    if (typeof updateVoiceLabel === 'function') updateVoiceLabel();
-    if (typeof renderVoiceList === 'function') renderVoiceList();
+    try { localStorage.setItem('trivia_voice', s['trivia_voice']); } catch {}
+    if (midRound) { _pendingVoiceSettings = _pendingVoiceSettings || {}; _pendingVoiceSettings.voice = s['trivia_voice']; }
+    else { selectedVoiceName = s['trivia_voice']; if (typeof updateVoiceLabel === 'function') updateVoiceLabel(); if (typeof renderVoiceList === 'function') renderVoiceList(); }
   }
-  if (s['trivia_voice_rate'])  { vpRate  = parseFloat(s['trivia_voice_rate'])  || 1; try { localStorage.setItem('trivia_voice_rate',  String(vpRate));  } catch {} }
-  if (s['trivia_voice_pitch']) { vpPitch = parseFloat(s['trivia_voice_pitch']) || 1; try { localStorage.setItem('trivia_voice_pitch', String(vpPitch)); } catch {} }
-  if (s['trivia_voice_tab'])   { vpTab   = s['trivia_voice_tab'];  try { localStorage.setItem('trivia_voice_tab', vpTab); } catch {} }
+  if (s['trivia_voice_rate']) {
+    const rate = parseFloat(s['trivia_voice_rate']) || 1;
+    try { localStorage.setItem('trivia_voice_rate', String(rate)); } catch {}
+    if (midRound) { _pendingVoiceSettings = _pendingVoiceSettings || {}; _pendingVoiceSettings.rate = rate; }
+    else { vpRate = rate; }
+  }
+  if (s['trivia_voice_pitch']) {
+    const pitch = parseFloat(s['trivia_voice_pitch']) || 1;
+    try { localStorage.setItem('trivia_voice_pitch', String(pitch)); } catch {}
+    if (midRound) { _pendingVoiceSettings = _pendingVoiceSettings || {}; _pendingVoiceSettings.pitch = pitch; }
+    else { vpPitch = pitch; }
+  }
+  if (s['trivia_voice_tab']) {
+    try { localStorage.setItem('trivia_voice_tab', s['trivia_voice_tab']); } catch {}
+    if (midRound) { _pendingVoiceSettings = _pendingVoiceSettings || {}; _pendingVoiceSettings.tab = s['trivia_voice_tab']; }
+    else { vpTab = s['trivia_voice_tab']; }
+  }
   if (s['trivia_narrator_v2']) { try { localStorage.setItem('trivia_narrator_v2', s['trivia_narrator_v2']); } catch {} }
   if (s['applauseSettings'])   { try { applauseSettings = JSON.parse(s['applauseSettings']); localStorage.setItem('applauseSettings', s['applauseSettings']); } catch {} }
   if (s['mixedCats'])          { try { localStorage.setItem('mixedCats', s['mixedCats']); } catch {} }
