@@ -476,6 +476,7 @@ button, .btn, [onclick], .chip, .cat-chip, .rb-cat-chip { touch-action: manipula
 .gside-title{font-size:0.62rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;}
 .gside-mode{font-size:0.92rem;color:var(--muted);margin-bottom:8px;padding:4px 8px;background:var(--s2);border-radius:6px;text-align:center;}
 .gp{display:flex;align-items:center;gap:7px;padding:7px 9px;background:var(--s2);border-radius:9px;border:1px solid var(--border);transition:all 0.3s;animation:sli 0.3s ease;}
+.gp.offline{opacity:0.55;border-color:var(--red);border-style:dashed;filter:grayscale(0.4);}
 .gp.ans{border-color:rgba(65,105,225,0.35);}
 .gp.ok{border-color:rgba(34,197,94,0.4);}
 .gp.ko{border-color:rgba(239,68,68,0.25);opacity:0.7;}
@@ -3754,24 +3755,41 @@ function handle(d){
       break;
 
     case 'playerJoin':
+      // ✅ ניקוי שחקן offline עם אותו מספר טלפון (reconnect אחרי ניתוק)
+      Object.keys(players).forEach(cid => {
+        if (players[cid].phone === d.player.phone && players[cid]._online === false) {
+          removeBubble(cid); delete players[cid];
+        }
+      });
       players[d.player.callId]=d.player;
+      players[d.player.callId]._online = true;
       const pr=loadPresets();
       if(pr[d.player.phone]&&pr[d.player.phone]!==d.player.name){
         const sn=pr[d.player.phone];
         fetch('/setname',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:d.player.phone,name:sn})});
         d.player.name=sn; players[d.player.callId].name=sn;
       }
-      renderPlayers();addFeed('🟢',d.player.name+' הצטרף');
+      renderPlayers();renderGamePlayers();addFeed('🟢',d.player.name+' התחבר');
       sfx.join();spawnBubble(d.player);updateStatus();break;
 
     case 'playerLeave':
-      const lv=players[d.callId];
-      if(lv){
-        addFeed('🔴',lv.name+' עזב');
-        removeBubble(d.callId); // remove this player's bubble with pop animation
-        delete players[d.callId];
+      { const lv=players[d.callId];
+        if(lv){
+          // ✅ תיקון: מסמנים כ-offline ומציגים מיד במשחק — לא מוחקים אם המשחק פעיל
+          if(gameState==='playing'){
+            lv._online=false;
+            addFeed('🔴',lv.name+' ניתק');
+            renderGamePlayers(); // ✅ עדכון מיידי של תצוגת השחקן במשחק
+            renderPlayers();
+          } else {
+            addFeed('🔴',lv.name+' עזב');
+            removeBubble(d.callId);
+            delete players[d.callId];
+            renderPlayers();renderGamePlayers();
+          }
+        }
+        updateStatus();break;
       }
-      renderPlayers();updateStatus();break;
 
     case 'playerUpdate':
       if(players[d.callId]){players[d.callId].name=d.name;renderPlayers();}break;
@@ -4252,6 +4270,9 @@ function renderGamePlayers(){
   const vals=Object.values(players).sort((a,b)=>(b.score||0)-(a.score||0));
   document.getElementById('game-players').innerHTML=vals.map(p=>{
     let cls='gp',dotC='var(--muted)';
+    // ✅ שחקן שניתק — מוצג באפור עם אינדיקטור ניתוק מיידי
+    const isOffline = p._online === false;
+    if(isOffline) cls+=' offline';
     if(p.answered){
       if(correctAns!==null){
         if(p._first&&gameMode==='headtohead'){cls+=' first';dotC='var(--gold)';}
@@ -4259,9 +4280,10 @@ function renderGamePlayers(){
         else{cls+=' ko';dotC='var(--red)';}
       } else {cls+=' ans';dotC='var(--blue)';}
     }
-    return `<div class="${cls}">
-      <div class="gav" style="background:${COLORS[p.color||0]}22;color:${COLORS[p.color||0]}">${p.name.charAt(0)}</div>
-      <div class="gname">${p.name}</div>
+    return `<div class="${cls}" title="${isOffline?'ניתק':'מחובר'}">
+      <div class="gav" style="background:${COLORS[p.color||0]}${isOffline?'11':'22'};color:${isOffline?'var(--muted)':COLORS[p.color||0]}">${p.name.charAt(0)}</div>
+      <div class="gname" style="${isOffline?'opacity:0.4;text-decoration:line-through':''}">${p.name}</div>
+      ${isOffline?'<div style="font-size:0.6rem;color:var(--red);font-weight:700">📵</div>':''}
       ${gameMode==='blitz'&&(p._streak||0)>=2?`<div style="font-size:0.7rem;color:#67e8f9;font-weight:800">🔥${p._streak}</div>`:''}
       ${p.answered?`<div class="gdot" style="background:${dotC};box-shadow:0 0 5px ${dotC}"></div>`:''}
       <div class="gscore">${p.score||0}</div>
@@ -4306,7 +4328,9 @@ function renderAnswers(correct){
       else if(counts[i]>0) cls+=' sel';
     }
     const pct=total>0?Math.round(counts[i]/total*100):0;
-    return `<div class="${cls}">
+    // ✅ לחיצה ידנית לאדמין — מאפשרת סימולציה/בדיקה מיידית ללא המתנה לקריין
+    const clickable = correct===null && gameState==='playing' ? `onclick="adminForceAnswer(${i})" style="cursor:pointer" title="לחץ לסימולציה"` : '';
+    return `<div class="${cls}" ${clickable}>
       <div class="anum">${i+1}</div>
       <div class="abody">
         <div class="atext">${ans}</div>
@@ -4555,7 +4579,17 @@ function updateStatus(){
   const rsp = document.getElementById('rs-mode-pill'); if(rsp) rsp.textContent = document.getElementById('admin-mode-pill')?.textContent || '—';
 }
 
-// ========== TIMER ==========
+// ✅ לחיצת אדמין ידנית על תשובה — מאפשרת בדיקה/סימולציה מיידית (לפני/אחרי קריין)
+function adminForceAnswer(answerIndex) {
+  if (gameState !== 'playing' || !currentQ) return;
+  const adminPhone = 'admin-test';
+  fetch('/admin-answer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chosen: answerIndex, phone: adminPhone })
+  }).catch(() => {});
+  ttsLog('adminForceAnswer', { chosen: answerIndex });
+}
 function startTimer(sec){
   const fillEl0=document.getElementById('tfill'), numEl0=document.getElementById('tnum');
   ttsLog('startTimer CALLED', { sec, hadPreviousInterval: !!timerInt, tfillFound: !!fillEl0, tnumFound: !!numEl0 });
@@ -5311,7 +5345,7 @@ function _ttsPlay(text, pri, onEnd) {
     done();
   }, 12000);
 
-  _ttsPlayServer(text, selectedVoiceName, done);
+  _ttsPlayServer(text, selectedVoiceName, done, () => _ttsSeq !== seq);
 }
 
 // התראה למשתמש כשה-TTS נכשל — מוגבלת בתדירות כדי לא להציף בטוסטים
@@ -5326,7 +5360,7 @@ function notifyTtsFailure() {
   }
 }
 
-function _ttsPlayServer(text, voiceId, done) {
+function _ttsPlayServer(text, voiceId, done, isStale) {
   const spd = EDGE_SPEED;
   // ✅ תיקון cache key: preloadEdge משתמש ב-text.slice(0,500) כמפתח.
   // לפני התיקון, _ttsPlayServer השתמש ב-text המלא — אי-התאמה גרמה ל-cache miss בכל פעם,
@@ -5390,8 +5424,9 @@ function _ttsPlayServer(text, voiceId, done) {
     ttsLog('Server: fetching TTS (cache miss, key:', key.slice(0,60) + ')');
     preloadEdge(cacheText, voiceId, spd).then(url => {
       if (!url) { ttsLog('Server: TTS fetch failed — no audio'); notifyTtsFailure(); done(); return; }
-      // ✅ בדיקת stale: אם ה-fetch ארך זמן ובינתיים הופסק המשחק/TTS (seq השתנה) — לא מנגנים
-      if (_ttsSeq !== seq) { ttsLog('Server: TTS fetch done but seq changed (cancelled), discarding', { fetchedSeq: seq, currentSeq: _ttsSeq }); return; }
+      // ✅ תיקון stale-check: isStale היא פונקציה שמועברת מ-_ttsPlay ויש לה גישה ל-seq
+      // (לפני התיקון: הקוד ניסה לגשת ל-seq ישירות — ReferenceError — האודיו לא ניגן לעולם)
+      if (isStale && isStale()) { ttsLog('Server: TTS fetch done but cancelled (stale), discarding'); return; }
       ttsLog('Server: fetch OK, playing');
       doPlay(url);
     }).catch(e => { ttsLog('Server: preloadEdge error', e?.message); notifyTtsFailure(); done(); });

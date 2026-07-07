@@ -935,6 +935,26 @@ app.get('/kick', (req, res) => {
   res.send('kicked');
 });
 
+// /admin-answer — סימולציית תשובה ידנית ע"י אדמין (לבדיקות, ופרוקסי לשחקנים)
+app.post('/admin-answer', (req, res) => {
+  if (gameState !== 'playing') return res.json({ ok: false, reason: 'not playing' });
+  const { chosen } = req.body || {};
+  if (chosen === undefined || chosen < 0 || chosen > 3) return res.json({ ok: false, reason: 'invalid' });
+  // מצא שחקן admin-test קיים, או צור אחד
+  let adminPlayer = Object.values(players).find(p => p.phone === 'admin');
+  if (!adminPlayer) {
+    const cid = 'admin-' + Date.now();
+    adminPlayer = { callId: cid, phone: 'admin', name: 'אדמין', score: 0, correct: 0, answered: false, color: 5, _chosen: null };
+    players[cid] = adminPlayer;
+    broadcast({ type: 'playerJoin', player: adminPlayer });
+  }
+  if (!adminPlayer.answered) {
+    handleAnswer(adminPlayer, parseInt(chosen));
+    log('🖱️', `אדמין לחץ על תשובה ${parseInt(chosen)+1}`);
+  }
+  res.json({ ok: true });
+});
+
 app.post('/setname', (req, res) => {
   const { phone, name } = req.body;
   if (phone && name) {
