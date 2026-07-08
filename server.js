@@ -495,11 +495,9 @@ function showQuestion() {
   // ✅ pre-warm השאלה הנוכחית מיידית — חשוב במיוחד לשאלה 1 (אין pre-warm מה-reveal הקודמת).
   // הספירה לאחור (3-8 שניות) נותנת לשרת זמן לייצר ולשמור TTS במטמון לפני שהלקוח יבקש אותו.
   (() => {
-    const nums = ['אחת','שתיים','שלוש','ארבע'];
-    const answersText = (q.a || []).map((a, i) => `${nums[i]}... ${a}`).join('... ');
-    const qText = (q.q + '... ' + answersText).slice(0, 500);
+    const qText = buildQuestionTTSText(q);
     const qVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
-    [1.0, 1.3].forEach(spd => fetchTTS(qText, qVoice, spd).catch(() => {}));
+    fetchTTS(qText, qVoice, 1.0).catch(() => {});
     log('🔮', `pre-warming שאלה ${currentQuestion + 1}: "${qText.slice(0, 50)}" [voice=${qVoice}]`);
   })();
   broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit, roundId });
@@ -549,8 +547,19 @@ function beginAnswerWindow(roundId, timeLimit) {
   if (q) {
     const revealText = `התשובה הנכונה היא: ${q.a[q.correct]}`;
     const voice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
-    [1.0, 1.3].forEach(spd => fetchTTS(revealText, voice, spd).catch(() => {}));
+    fetchTTS(revealText, voice, 1.0).catch(() => {});
     log('🔊', `pre-warming reveal TTS (${timeLimit}s מראש): "${revealText.slice(0,40)}" [voice=${voice}]`);
+  }
+
+  // ✅ תיקון: pre-warm השאלה הבאה כבר עכשיו — בתחילת חלון התשובה (~timeLimit שניות מראש)
+  // ולא רק ב-revealAnswer (שם היה רק חלון של ~4-7 שניות, לפעמים לא מספיק לייצור edge-tts
+  // לשאלות ארוכות, וזה גרם לקריין להתחיל באיחור של כמה שניות אחרי שהמסך כבר הציג את השאלה).
+  const nextQ = questions[currentQuestion + 1];
+  if (nextQ) {
+    const nextText = buildQuestionTTSText(nextQ);
+    const nextVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    fetchTTS(nextText, nextVoice, 1.0).catch(() => {});
+    log('🔮', `pre-warming מוקדם שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
   }
 
   broadcast({ type: 'startTimer', timeLimit, roundId });
@@ -592,11 +601,9 @@ function revealAnswer() {
   // ויוחזר מיידית במקום לחכות 6-8 שניות לייצור.
   const nextQ = questions[currentQuestion + 1];
   if (nextQ) {
-    const nums = ['אחת','שתיים','שלוש','ארבע'];
-    const answersText = (nextQ.a || []).map((a, i) => `${nums[i]}... ${a}`).join('... ');
-    const nextText = (nextQ.q + '... ' + answersText).slice(0, 500);
+    const nextText = buildQuestionTTSText(nextQ);
     const nextVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
-    [1.0, 1.3].forEach(spd => fetchTTS(nextText, nextVoice, spd).catch(() => {}));
+    fetchTTS(nextText, nextVoice, 1.0).catch(() => {});
     log('🔮', `pre-warming שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
   }
 
@@ -1093,6 +1100,22 @@ function _speedFactorToRateOffset(baseRatePct, speedFactor) {
 }
 
 // ===== Cache + תור =====
+// ✅ תיקון: חייב להיות זהה תו-בתו ל-stripEmoji בצד הלקוח (trivia.html)! אם השרת עושה
+// pre-warm עם טקסט גולמי (עם קו מפריד —, סימנים יווניים כמו π, וכו') והלקוח בפועל מבקש
+// TTS עם טקסט מנוקה — מפתחות המטמון לא תואמים, ה-pre-warm הולך לאיבוד, והלקוח נתקע
+// מחכה לייצור TTS חדש מאפס (זה בדיוק מה שגרם לקריין "לאחר" בהתחלת חלק מהשאלות).
+function stripForTTS(t) {
+  return (t || '').replace(/[^\u0020-\u007E\u0590-\u05FF\u200B-\u200F\uFEFF\n\r]/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+function buildQuestionTTSText(q) {
+  // ✅ תיקון נוסף: מפסיקים לייצר גם וריאציית speed=1.3 מיותרת — הלקוח בפועל תמיד מבקש 1.0
+  // (EDGE_SPEED קבוע בקוד הלקוח). ייצור כפול תפס מיותר חצי מהקיבולת המקבילה
+  // (MAX_CONCURRENT_TTS=3) בדיוק ברגעים הקריטיים, וגרם לתורים/עיכובים נוספים.
+  const nums = ['אחת', 'שתיים', 'שלוש', 'ארבע'];
+  const answersText = (q.a || []).map((a, i) => `${nums[i]}... ${stripForTTS(a)}`).join('... ');
+  return (stripForTTS(q.q) + (answersText ? ('... ' + answersText) : '')).slice(0, 500);
+}
+
 const _ttsCache = new Map();
 const _fetchingTTSInProgress = new Map(); // ✅ dedup: מונע ייצור כפול של TTS זהה במקביל
 let _lastClientVoice = null; // ✅ הקול האחרון שהלקוח ביקש — משמש ל-pre-warm
