@@ -497,7 +497,7 @@ function showQuestion() {
   (() => {
     const qText = buildQuestionTTSText(q);
     const qVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
-    fetchTTS(qText, qVoice, 1.0).catch(() => {});
+    fetchTTS(qText, qVoice, _lastClientSpeed).catch(() => {});
     log('🔮', `pre-warming שאלה ${currentQuestion + 1}: "${qText.slice(0, 50)}" [voice=${qVoice}]`);
   })();
   broadcast({ type: 'question', index: currentQuestion, total: questions.length, question: q.q, answers: q.a, topic: q.topic, mode: gameMode, timeLimit, roundId });
@@ -547,7 +547,7 @@ function beginAnswerWindow(roundId, timeLimit) {
   if (q) {
     const revealText = `התשובה הנכונה היא: ${q.a[q.correct]}`;
     const voice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
-    fetchTTS(revealText, voice, 1.0).catch(() => {});
+    fetchTTS(revealText, voice, _lastClientSpeed).catch(() => {});
     log('🔊', `pre-warming reveal TTS (${timeLimit}s מראש): "${revealText.slice(0,40)}" [voice=${voice}]`);
   }
 
@@ -558,7 +558,7 @@ function beginAnswerWindow(roundId, timeLimit) {
   if (nextQ) {
     const nextText = buildQuestionTTSText(nextQ);
     const nextVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
-    fetchTTS(nextText, nextVoice, 1.0).catch(() => {});
+    fetchTTS(nextText, nextVoice, _lastClientSpeed).catch(() => {});
     log('🔮', `pre-warming מוקדם שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
   }
 
@@ -603,7 +603,7 @@ function revealAnswer() {
   if (nextQ) {
     const nextText = buildQuestionTTSText(nextQ);
     const nextVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
-    fetchTTS(nextText, nextVoice, 1.0).catch(() => {});
+    fetchTTS(nextText, nextVoice, _lastClientSpeed).catch(() => {});
     log('🔮', `pre-warming שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
   }
 
@@ -720,6 +720,14 @@ await call.read(
         { max_digits: 1, digits_allowed: [1,2,3,4], sec_wait: 60, allow_empty: true }
       );
       if (gameState === 'playing' && digit && ['1','2','3','4'].includes(String(digit))) {
+        // ✅ תיקון: אין קבלת תשובה עד שהקריין מסיים להקריא את השאלה (answerWindowStartedFor
+        // מסומן ב-beginAnswerWindow, שרץ רק אחרי narrator-ready/narrator-ping). לפני התיקון
+        // תשובה שהתקבלה תוך כדי ההקראה גרמה ל"כולם ענו" מוקדם מדי ושתקה את הקריין באמצע משפט.
+        // עכשיו לחיצה שמגיעה לפני שהקריין סיים — פשוט מתעלמים ממנה (השחקן צריך ללחוץ שוב).
+        if (answerWindowStartedFor !== questionStartedAt) {
+          log('🔇', `${player.name} לחץ ${digit} לפני שהקריין סיים להקריא — מתעלם (roundId=${questionStartedAt})`);
+          continue;
+        }
         const chosen = parseInt(digit) - 1;
         if (gameMode === 'reaction') handleReactionAnswer(player, parseInt(digit));
         else if (gameMode === 'number') handleNumberGuess(player, parseInt(digit));
@@ -1119,6 +1127,7 @@ function buildQuestionTTSText(q) {
 const _ttsCache = new Map();
 const _fetchingTTSInProgress = new Map(); // ✅ dedup: מונע ייצור כפול של TTS זהה במקביל
 let _lastClientVoice = null; // ✅ הקול האחרון שהלקוח ביקש — משמש ל-pre-warm
+let _lastClientSpeed = 1.0;  // ✅ המהירות האחרונה שהלקוח ביקש בפועל (סליידר "מהירות קריין") — משמש ל-pre-warm
 const TTS_CACHE_MAX = 200;
 const MAX_CONCURRENT_TTS = 3;
 let _ttsActiveCount = 0;
@@ -1294,6 +1303,7 @@ app.get('/tts', async (req, res) => {
   const speed = Math.min(2.0, Math.max(0.5, parseFloat(req.query.speed) || 1.0));
   // ✅ עוקב אחרי הקול האחרון שהלקוח ביקש — לשימוש ב-pre-warm
   if (key && key !== _lastClientVoice) { _lastClientVoice = key; log('🔊', `קול לקוח עודכן: ${key}`); }
+  if (speed && speed !== _lastClientSpeed) { _lastClientSpeed = speed; log('🏃', `מהירות קריין עודכנה: ${speed}x`); }
   if (!text) return res.status(400).send('missing text');
   try {
     const { data, mime } = await fetchTTS(text, key, speed);

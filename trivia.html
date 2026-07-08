@@ -1973,7 +1973,7 @@ function showCountdown(mode, onDone, introText) {
     for (let i = cdLength; i >= 1; i--) wordsToPreload.push(allWords[i] || String(i));
     allGoWords.forEach(w => wordsToPreload.push(w));
     // preload לblob cache — ניגון מיידי בזמן הספירה
-    wordsToPreload.forEach(word => preloadEdge(word, selectedVoiceName, EDGE_SPEED));
+    wordsToPreload.forEach(word => preloadEdge(word, selectedVoiceName, narratorSpeed()));
   }
   // Colors and subs indexed by count (cdLength down to 1) — index 0 = last second
   const countColors = ['var(--red)','var(--orange)','var(--gold)','var(--green)','var(--blue)','var(--purple)','var(--blue)','var(--green)','var(--gold)','var(--orange)'];
@@ -2002,7 +2002,7 @@ function showCountdown(mode, onDone, introText) {
     if (!ttsOn) return;
     if (isEdgeVoice(selectedVoiceName)) {
       // נסה מcache קודם
-      const key = selectedVoiceName + '|' + EDGE_SPEED + '|' + word;
+      const key = selectedVoiceName + '|' + narratorSpeed() + '|' + word;
       const cached = _edgeBlobCache.get(key);
       if (cached) {
         if (_cdAudio) { try { _cdAudio.pause(); } catch {} }
@@ -2010,7 +2010,7 @@ function showCountdown(mode, onDone, introText) {
         _cdAudio.play().catch(() => {});
       } else {
         // אם אין בcache — fetch בשקט (לא חוסם)
-        preloadEdge(word, selectedVoiceName, EDGE_SPEED).then(url => {
+        preloadEdge(word, selectedVoiceName, narratorSpeed()).then(url => {
           if (!url) return;
           if (_cdAudio) { try { _cdAudio.pause(); } catch {} }
           _cdAudio = new Audio(url);
@@ -2077,7 +2077,7 @@ function showCountdown(mode, onDone, introText) {
         };
 
         // נגן goWord ישירות עם Audio — לא דרך _ttsPlay
-        const key = selectedVoiceName + '|' + EDGE_SPEED + '|' + goWord;
+        const key = selectedVoiceName + '|' + narratorSpeed() + '|' + goWord;
         const cached = _edgeBlobCache.get(key);
         const playGoAudio = (url) => {
           if (!url) { doAfterGo(); return; }
@@ -2092,7 +2092,7 @@ function showCountdown(mode, onDone, introText) {
           const safeDoAfterGo = () => { if (!goFired) { goFired = true; doAfterGo(); } };
           // אם השרת לוקח יותר מדי זמן (כמו במצב כשל ממושך) — ממשיכים בלי לחכות
           setTimeout(safeDoAfterGo, 3000);
-          preloadEdge(goWord, selectedVoiceName, EDGE_SPEED)
+          preloadEdge(goWord, selectedVoiceName, narratorSpeed())
             .then(url => { if (!goFired) { goFired = true; playGoAudio(url); } })
             .catch(safeDoAfterGo);
         }
@@ -3827,10 +3827,10 @@ function handle(d){
           const nums = ['אחת','שתיים','שלוש','ארבע'];
           const answersText = (d.answers||[]).map((a,i)=>`${nums[i]}... ${stripEmoji(a)}`).join('... ');
           const fullText = stripEmoji(d.question||'') + (answersText ? ('... '+answersText) : '');
-          const cacheKey = selectedVoiceName + '|' + EDGE_SPEED + '|' + fullText.slice(0,500);
+          const cacheKey = selectedVoiceName + '|' + narratorSpeed() + '|' + fullText.slice(0,500);
           const wasPrewarmed = _edgeBlobCache.has(cacheKey);
           ttsLog('case question: preload', { wasPrewarmed, key: cacheKey.slice(0,60) });
-          if (!wasPrewarmed) preloadEdge(fullText.slice(0,500), selectedVoiceName, EDGE_SPEED);
+          if (!wasPrewarmed) preloadEdge(fullText.slice(0,500), selectedVoiceName, narratorSpeed());
         }
         if (countdownActive) {
           ttsLog('case question: countdownActive → _pendingSpeak', { q: (d.question||'').slice(0,40) });
@@ -5381,7 +5381,7 @@ function notifyTtsFailure() {
 }
 
 function _ttsPlayServer(text, voiceId, done, isStale) {
-  const spd = EDGE_SPEED;
+  const spd = narratorSpeed();
   // ✅ תיקון cache key: preloadEdge משתמש ב-text.slice(0,500) כמפתח.
   // לפני התיקון, _ttsPlayServer השתמש ב-text המלא — אי-התאמה גרמה ל-cache miss בכל פעם,
   // אפילו אם הטקסט נטען מראש (preload מ-case 'question'), ה-TTS הוריד שוב מהשרת.
@@ -5455,12 +5455,16 @@ function _ttsPlayServer(text, voiceId, done, isStale) {
 
 let _edgeAudio = null; // AudioElement נוכחי
 const _edgeBlobCache = new Map(); // blob URL cache לניגון מיידי
-const EDGE_SPEED = 1.0; // המהירות נשלטת כעת דרך הפרופיל הנבחר בשרת (ראה VOICE_OPTIONS)
+// ✅ תיקון: מהירות הקריין הפכה להגדרה אמיתית וניתנת לשליטה (במקום קבוע קבוע ב-1.0).
+// vpRate מוגדר בהמשך הקובץ (פאנל הקול) ונשמר/מסונכרן עם השרת כמו כל הגדרה אחרת —
+// ראו slider "מהירות קריין" בפאנל בחירת קול. כל קריאות ה-TTS למטה קוראות ל-narratorSpeed()
+// כדי לקבל את הערך העדכני בזמן אמת (גם אם vpRate עוד לא הוגדר בשלב טעינה מוקדם מאוד).
+function narratorSpeed() { return (typeof vpRate !== 'undefined' && vpRate) ? vpRate : 1.0; }
 
 // preload — fetch → blob → שמור בcache → החזר Promise<blobUrl>
 function preloadEdge(text, voiceId, speed) {
   if (!text) return Promise.resolve(null);
-  const spd = speed || EDGE_SPEED;
+  const spd = speed || narratorSpeed();
   const key = voiceId + '|' + spd + '|' + text.slice(0, 500);
   // ✅ תיקון double-audio: אם כבר במטמון — מחזיר מיד
   if (_edgeBlobCache.has(key)) return Promise.resolve(_edgeBlobCache.get(key));
@@ -7850,6 +7854,20 @@ function maybeAddHotseatBanner(d) {
   <!-- רשימת קולות -->
   <div id="vp-voice-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px;"></div>
 
+  <!-- ✅ מהירות קריין — סליידר אמיתי שמשפיע בפועל על ה-TTS (לא עוד הגדרה מתה) -->
+  <div style="margin-bottom:18px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-size:0.92rem;color:var(--text);font-weight:600;">🏃 מהירות קריין</span>
+      <span id="vp-rate-label" style="font-size:0.88rem;color:var(--muted);">1.0x</span>
+    </div>
+    <input id="vp-rate-slider" type="range" min="0.7" max="1.5" step="0.05" value="1"
+      oninput="onVpRateInput(this.value)"
+      style="width:100%;accent-color:var(--blue);">
+    <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--muted);margin-top:2px;">
+      <span>איטי</span><span>רגיל</span><span>מהיר</span>
+    </div>
+  </div>
+
   <!-- אישור -->
   <div style="display:flex;gap:8px;">
     <button onclick="confirmVoicePanel()" style="flex:2;padding:11px;border-radius:10px;border:none;background:var(--blue);color:#fff;font-size:1rem;cursor:pointer;font-weight:700;">✓ אישור</button>
@@ -7877,6 +7895,11 @@ let vpPitch = parseFloat(localStorage.getItem('trivia_voice_pitch') || '1');
 function openVoicePanel() {
   vpPendingVoice = selectedVoiceName;
   renderVoiceList();
+  // ✅ מסנכרן את הסליידר עם הערך השמור בפועל בכל פתיחה
+  const rateSlider = document.getElementById('vp-rate-slider');
+  const rateLabel  = document.getElementById('vp-rate-label');
+  if (rateSlider) rateSlider.value = vpRate || 1;
+  if (rateLabel)  rateLabel.textContent = (vpRate || 1).toFixed(2).replace(/0$/,'').replace(/\.$/,'.0') + 'x';
   document.getElementById('voice-panel-overlay').style.display = 'block';
   document.getElementById('voice-panel').style.display = 'block';
   // רענן את הרשימה מהשרת בכל פתיחה — מבטיח עדכניות
@@ -7957,6 +7980,24 @@ function updateVoiceLabel() {
 
 function updateVoiceRate(val)  { vpRate  = parseFloat(val); saveSettingToServer('trivia_voice_rate',  String(vpRate));  }
 function updateVoicePitch(val) { vpPitch = parseFloat(val); saveSettingToServer('trivia_voice_pitch', String(vpPitch)); }
+
+// ✅ handler בפועל לסליידר "מהירות קריין" בפאנל הקול — מעדכן תווית, שומר, ומשמיע דוגמה קצרה
+let _vpRateTestDebounce = null;
+function onVpRateInput(val) {
+  const rate = parseFloat(val);
+  const label = document.getElementById('vp-rate-label');
+  if (label) label.textContent = rate.toFixed(2).replace(/0$/,'').replace(/\.$/,'.0') + 'x';
+  updateVoiceRate(rate);
+  // דוגמת שמיעה קצרה עם דיליי קטן, כדי לא לירות בקשת TTS על כל פיקסל גרירה
+  clearTimeout(_vpRateTestDebounce);
+  _vpRateTestDebounce = setTimeout(() => {
+    unlockTTS();
+    const id = vpPendingVoice || selectedVoiceName;
+    const params = new URLSearchParams({ text: 'זו הדוגמה למהירות הקריין הנוכחית', voice: id, speed: String(rate) });
+    const audio = new Audio('/tts?' + params);
+    audio.play().catch(() => { ttsLog('onVpRateInput test play failed'); });
+  }, 400);
+}
 
 // stub functions for backward compatibility
 function setVpTab() {} function toggleVpDebug() {} function highlightFilter() {}
