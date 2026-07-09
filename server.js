@@ -253,6 +253,15 @@ function handleAnswer(player, chosen) {
   const q = questions[currentQuestion];
   if (player.answered) return;
   if (chosen < 0 || chosen > 3) return;
+  // ✅ תיקון אמיתי: הבדיקה הקודמת הייתה רק בלולאת ה-IVR של הטלפון (call.read), אבל
+  // "לחץ לסימולציה" (כפתור האדמין על מסך התשובות, /admin-answer) קורא ל-handleAnswer
+  // ישירות ומדלג על הלולאה הזו לגמרי! זו כנראה בדיוק הסיבה שהתיקון הקודם "לא עבד" —
+  // הבדיקה הייתה במקום הלא נכון. עכשיו הבדיקה כאן, בנקודת הכניסה המשותפת האמיתית לכל
+  // סוגי התשובות (טלפון + סימולציית אדמין) עבור המצבים classic/headtohead/survival/blitz/vote.
+  if (answerWindowStartedFor !== questionStartedAt) {
+    log('🔇', `${player.name} ניסה לענות לפני שהקריין סיים להקריא — מתעלם (roundId=${questionStartedAt})`);
+    return;
+  }
 
   player.answered = true;
   player._chosen = chosen;
