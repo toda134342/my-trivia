@@ -5363,6 +5363,13 @@ function _ttsPlay(text, pri, onEnd) {
   _ttsFallback = setTimeout(() => {
     ttsLog(`_ttsPlay FALLBACK FIRED`, { seq, pri: priName, text: text.slice(0,40) });
     done();
+    // ✅ תיקון: בלי זה, אם ה-fetch שהתחיל קודם מסיים להתייצר *אחרי* שה-fallback כבר "ויתר"
+    // עליו והמשחק המשיך הלאה — isStale() בהמשך _ttsPlayServer עדיין רואה _ttsSeq === seq
+    // (done() לא משנה את _ttsSeq בעצמו) ומנגן את האודיו ה"ישן" באיחור. זה בדיוק מה שגרם
+    // לתחושת "הקריין קופץ / נחתך באמצע דיבור" — האודיו המאוחר מתחיל, ואז נקטע מיד ע"י
+    // האירוע הבא (שאלה הבאה / reveal חדש) שכבר קורה במקביל. עכשיו מסמנים את ה-seq כמבוטל
+    // כדי שה-fetch המאוחר יתגלה כ-stale ויושלך בשקט, בדיוק כמו כל ביטול אחר.
+    if (_ttsSeq === seq) _ttsSeq++;
   }, 12000);
 
   _ttsPlayServer(text, selectedVoiceName, done, () => _ttsSeq !== seq);

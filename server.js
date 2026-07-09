@@ -571,6 +571,17 @@ function beginAnswerWindow(roundId, timeLimit) {
     log('🔮', `pre-warming מוקדם שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
   }
 
+  // ✅ שיפור נוסף: pre-warm גם את השאלה שאחרי-הבאה — עד שהיא תוצג יהיה לה כמעט פי 2 זמן
+  // הכנה (שני חלונות תשובה שלמים במקום אחד), רשת ביטחון נוספת למקרה שה-edge-tts איטי
+  // באופן חריג לשאלה מסוימת.
+  const nextNextQ = questions[currentQuestion + 2];
+  if (nextNextQ) {
+    const nnText = buildQuestionTTSText(nextNextQ);
+    const nnVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    fetchTTS(nnText, nnVoice, _lastClientSpeed).catch(() => {});
+    log('🔮🔮', `pre-warming מוקדם מאוד שאלה ${currentQuestion + 3}: "${nnText.slice(0, 50)}"`);
+  }
+
   broadcast({ type: 'startTimer', timeLimit, roundId });
   clearTimeout(questionTimer);
   clearInterval(questionTickInterval);
