@@ -5359,8 +5359,8 @@ function _ttsPlay(text, pri, onEnd) {
 
   // fallback קצר — אם השרת לא ענה תוך זמן סביר, ממשיכים מיד למשחק במקום לתקוע את המסך
   // (גם עם 3 ניסיונות בצד שרת, כל ניסיון הוא עד ~12 שניות; חיכינו פעם ל-25 שניות וזה היה נראה כאילו המשחק תקוע)
-  // ✅ fallback 12s: הוגדל מ-6 כדי לתת לשרת זמן לייצר TTS (edge-tts לוקח 5-15 שניות לטקסט ארוך).
-  // אם הייצור לא הסתיים תוך 12 שניות — מניחים כשל ומתחילים טיימר בכל זאת.
+  // ✅ fallback 16s: הוגדל מ-12 כדי לתת מספיק זמן לטקסט reveal עם עקיצה/מחמאה (narratorZinger)
+  // שהוא cache miss חד-פעמי ויכול לקחת 7+ שניות לייצור — תואם ל-REVEAL_NARRATOR_FALLBACK_MS בשרת.
   _ttsFallback = setTimeout(() => {
     ttsLog(`_ttsPlay FALLBACK FIRED`, { seq, pri: priName, text: text.slice(0,40) });
     done();
@@ -5371,7 +5371,7 @@ function _ttsPlay(text, pri, onEnd) {
     // האירוע הבא (שאלה הבאה / reveal חדש) שכבר קורה במקביל. עכשיו מסמנים את ה-seq כמבוטל
     // כדי שה-fetch המאוחר יתגלה כ-stale ויושלך בשקט, בדיוק כמו כל ביטול אחר.
     if (_ttsSeq === seq) _ttsSeq++;
-  }, 12000);
+  }, 16000);
 
   _ttsPlayServer(text, selectedVoiceName, done, () => _ttsSeq !== seq);
 }
