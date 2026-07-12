@@ -3932,7 +3932,10 @@ function handle(d){
         if (ttsOn) {
           // ✅ אין יותר setTimeout 300ms — ה-TTS כבר במטמון (pre-warm ב-beginAnswerWindow, 22 שניות מראש).
           // הקריין מתחיל לדבר מיד עם הופעת מסך התשובה.
-          _ttsPlay('התשובה הנכונה היא: '+d.correctText, TTS_PRI.QUESTION, notifyRevealDone);
+          // ✅ עקיצה/מחמאה אקראית (d.narratorZinger, מוחלט בשרת) — מצורפת לאותו משפט כדי לא
+          // לשבור את סנכרון reveal-narrator-done הקיים (קריאה אחת ל-_ttsPlay, לא שרשור שתיים).
+          const revealText = 'התשובה הנכונה היא: ' + d.correctText + (d.narratorZinger ? '... ' + d.narratorZinger : '');
+          _ttsPlay(revealText, TTS_PRI.QUESTION, notifyRevealDone);
           _ttsNarratorDone = notifyRevealDone;
         } else {
           notifyRevealDone();

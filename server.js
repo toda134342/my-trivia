@@ -7,6 +7,32 @@ const PORT = 8080;
 const NAMES_FILE = '/app/data/names.json';
 const QUESTIONS_FILE = path.join(__dirname, 'questions.json');
 
+// ✅ עקיצות ומחמאות אקראיות מהקריין — נבחרות ב-revealAnswer() (ראו שם), לא בכל סיבוב,
+// כדי שלא יהיה צפוי/מעצבן. ניסוח קליל ולא פוגעני — זה משחק חברתי, לא רצינו "לשבור" אף אחד.
+const NARRATOR_ROAST = [
+  '{name}, אולי בפעם הבאה תנחש קצת יותר בזהירות',
+  '{name} טעה שוב! מישהו יזמין לו שכל חדש בבקשה',
+  'אוי ואבוי {name}... זה ממש לא זה',
+  '{name}, הניחוש הזה כאב לי בשבילך',
+  'סליחה {name}, אבל זה היה רחוק מאוד',
+  '{name}, קרוב... לתשובה הכי לא נכונה שיש',
+  'מישהו שיגיד ל{name} שיש גם מילון',
+  '{name}, אולי כדאי לצלצל לחבר בפעם הבאה',
+  '{name} ניסה, וזה כבר משהו',
+];
+const NARRATOR_COMPLIMENT = [
+  'וואו {name}, איזה ראש',
+  '{name}, פשוט מדהים, כל הכבוד',
+  'מרשים {name}, ממש מרשים',
+  'תראו את {name}, גאון של ממש',
+  '{name} קלע בול, איזו תשובה',
+  'כל הכבוד {name}, ידע אמיתי',
+  '{name}, אלוף, פשוט אלוף',
+  'וואלה {name}, אתה יודע דברים',
+];
+const ZINGER_CHANCE = 0.35; // ✅ סיכוי לעקיצה/מחמאה בכל reveal — לא בכל סיבוב, כדי לשמור על אפקט הפתעה
+
+
 // ===== GATEWAY — ROOMS & PASSWORDS =====
 const MASTER_KEY = '345345'; // סיסמת על — גישה לכל חדר
 const ROOMS_FILE = '/app/data/rooms.json';
@@ -616,6 +642,26 @@ function revealAnswer() {
   }
   log('💡', `תשובה: ${q.a[q.correct]}`);
 
+  // ✅ עקיצה/מחמאה אקראית מהקריין — רק עכשיו (reveal) אנחנו יודעים מי ענה נכון/לא נכון.
+  // לא יכולנו לדעת את זה מוקדם יותר (זו בדיוק הסיבה שאסור לחשוף נכון/לא נכון בזמן אמת —
+  // ראו handleAnswer), אז אי אפשר לעשות pre-warm לזה מראש כמו לשאר הטקסטים; זה אומר
+  // שבסיבוב עם עקיצה/מחמאה יש עיכוב קטן וסביר בהתחלת הקראת התשובה (cache miss חד-פעמי).
+  let narratorZinger = null;
+  if (gameMode !== 'vote' && Math.random() < ZINGER_CHANCE) {
+    const answered = Object.values(players).filter(p => p.answered && p.phone !== 'admin');
+    const wrong = answered.filter(p => p._chosen !== q.correct);
+    const right = answered.filter(p => p._chosen === q.correct);
+    const preferRoast = Math.random() < 0.5;
+    let pool = null, target = null;
+    if (preferRoast && wrong.length) { target = wrong[Math.floor(Math.random() * wrong.length)]; pool = NARRATOR_ROAST; }
+    else if (right.length) { target = right[Math.floor(Math.random() * right.length)]; pool = NARRATOR_COMPLIMENT; }
+    else if (wrong.length) { target = wrong[Math.floor(Math.random() * wrong.length)]; pool = NARRATOR_ROAST; }
+    if (target && pool) {
+      narratorZinger = pool[Math.floor(Math.random() * pool.length)].replace('{name}', target.name);
+      log('🎭', `עקיצה/מחמאה: "${narratorZinger}"`);
+    }
+  }
+
   // ✅ pre-warm שאלה הבאה: הזמן עד לשאלה הבאה (~4-7 שניות) מספיק לייצור TTS.
   // כך כשהלקוח יקבל את השאלה הבאה ויקרא preloadEdge, האודיו כבר יהיה במטמון
   // ויוחזר מיידית במקום לחכות 6-8 שניות לייצור.
@@ -640,6 +686,7 @@ function revealAnswer() {
     correctText: q.a[q.correct],
     mode: gameMode,
     revealRoundId: rRoundId,
+    narratorZinger,
     players: Object.values(players).map(p => ({ callId: p.callId, score: p.score, correct: p.correct }))
   });
 
