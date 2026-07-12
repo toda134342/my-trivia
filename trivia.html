@@ -4268,12 +4268,11 @@ function renderPlayers(){
 }
 
 function renderGamePlayers(){
-  const vals=Object.values(players).sort((a,b)=>(b.score||0)-(a.score||0));
+  // ✅ תיקון: שחקן שעזב/התנתק פשוט נעלם מהתצוגה — לא מוצג יותר עם קו חוצה/"מחוק".
+  // הנתונים שלו (ניקוד וכו') נשמרים בזיכרון בצד הלקוח למקרה שיתחבר מחדש, רק לא מוצגים.
+  const vals=Object.values(players).filter(p=>p._online!==false).sort((a,b)=>(b.score||0)-(a.score||0));
   document.getElementById('game-players').innerHTML=vals.map(p=>{
     let cls='gp',dotC='var(--muted)';
-    // ✅ שחקן שניתק — מוצג באפור עם אינדיקטור ניתוק מיידי
-    const isOffline = p._online === false;
-    if(isOffline) cls+=' offline';
     if(p.answered){
       if(correctAns!==null){
         if(p._first&&gameMode==='headtohead'){cls+=' first';dotC='var(--gold)';}
@@ -4281,10 +4280,9 @@ function renderGamePlayers(){
         else{cls+=' ko';dotC='var(--red)';}
       } else {cls+=' ans';dotC='var(--blue)';}
     }
-    return `<div class="${cls}" title="${isOffline?'ניתק':'מחובר'}">
-      <div class="gav" style="background:${COLORS[p.color||0]}${isOffline?'11':'22'};color:${isOffline?'var(--muted)':COLORS[p.color||0]}">${p.name.charAt(0)}</div>
-      <div class="gname" style="${isOffline?'opacity:0.4;text-decoration:line-through':''}">${p.name}</div>
-      ${isOffline?'<div style="font-size:0.6rem;color:var(--red);font-weight:700">📵</div>':''}
+    return `<div class="${cls}" title="מחובר">
+      <div class="gav" style="background:${COLORS[p.color||0]}22;color:${COLORS[p.color||0]}">${p.name.charAt(0)}</div>
+      <div class="gname">${p.name}</div>
       ${gameMode==='blitz'&&(p._streak||0)>=2?`<div style="font-size:0.7rem;color:#67e8f9;font-weight:800">🔥${p._streak}</div>`:''}
       ${p.answered?`<div class="gdot" style="background:${dotC};box-shadow:0 0 5px ${dotC}"></div>`:''}
       <div class="gscore">${p.score||0}</div>

@@ -981,7 +981,8 @@ app.post('/admin-answer', (req, res) => {
     const cid = 'admin-' + Date.now();
     adminPlayer = { callId: cid, phone: 'admin', name: 'אדמין', score: 0, correct: 0, answered: false, color: 5, _chosen: null };
     players[cid] = adminPlayer;
-    broadcast({ type: 'playerJoin', player: adminPlayer });
+    // ✅ תיקון: לא משדרים playerJoin עבור שחקן הבדיקה — זה גרם ל"אדמין" להופיע כאילו
+    // הוא שחקן אמיתי שהתחבר, למרות שזה רק כפתור סימולציה לבדיקות ולא שחקן בפועל.
   }
   if (!adminPlayer.answered) {
     handleAnswer(adminPlayer, parseInt(chosen));
@@ -1117,6 +1118,7 @@ const EDGE_VOICES = {
   'edge:hila':           { label: '👩 הילה — קריינית רגילה',    voice: 'he-IL-HilaNeural', rate: '+0%',  pitch: '+0Hz'  },
   'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',     voice: 'he-IL-HilaNeural', rate: '-8%',  pitch: '-8Hz'  },
   'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', voice: 'he-IL-HilaNeural', rate: '+25%', pitch: '+15Hz' },
+  'edge:avri-commander': { label: '🎖️ מפקד — סמכותי וחד',      voice: 'he-IL-AvriNeural', rate: '+12%', pitch: '-18Hz' },
 };
 
 // המרת מקדם speed (0.5–2.0, כפי שמגיע מהלקוח) להפרש אחוזים יחסי לפרופיל
@@ -1149,7 +1151,10 @@ const _fetchingTTSInProgress = new Map(); // ✅ dedup: מונע ייצור כפ
 let _lastClientVoice = null; // ✅ הקול האחרון שהלקוח ביקש — משמש ל-pre-warm
 let _lastClientSpeed = 1.0;  // ✅ המהירות האחרונה שהלקוח ביקש בפועל (סליידר "מהירות קריין") — משמש ל-pre-warm
 const TTS_CACHE_MAX = 200;
-const MAX_CONCURRENT_TTS = 3;
+const MAX_CONCURRENT_TTS = 4; // ✅ הועלה מ-3 ל-4: beginAnswerWindow יורה 3 בקשות pre-warm בו-זמנית
+// (טקסט תשובה + שאלה הבאה + שאלה אחרי-הבאה) — ב-3 סלוטים זה בדיוק על התפר, וגרם
+// לפעמים לתשובה הנכונה "להידחק" בתור מאחורי שתי בקשות ה-prewarm של השאלות, מה שהסביר
+// את חוסר היציבות בזמן שלקח לקריין להכריז את התשובה הנכונה (חלק מהר, חלק לוקח 4+ שניות).
 let _ttsActiveCount = 0;
 const _ttsWaitQueue = [];
 
@@ -1223,6 +1228,7 @@ const _ESPEAK_FALLBACK_PARAMS = {
   'edge:hila':           { pitch: 65, amp: 115 },
   'edge:hila-warm':      { pitch: 60, amp: 110 },
   'edge:hila-energetic': { pitch: 70, amp: 125 },
+  'edge:avri-commander': { pitch: 25, amp: 135 },
 };
 function _fetchEspeakFallback(text, voiceKey, speed) {
   return new Promise((resolve, reject) => {
