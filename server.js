@@ -1118,7 +1118,7 @@ const EDGE_VOICES = {
   'edge:hila':           { label: '👩 הילה — קריינית רגילה',    voice: 'he-IL-HilaNeural', rate: '+0%',  pitch: '+0Hz'  },
   'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',     voice: 'he-IL-HilaNeural', rate: '-10%', pitch: '+0Hz'  },
   'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', voice: 'he-IL-HilaNeural', rate: '+25%', pitch: '+15Hz' },
-  'edge:avri-commander': { label: '🎖️ מפקד — סמכותי וחד',      voice: 'he-IL-AvriNeural', rate: '+12%', pitch: '-18Hz' },
+  'edge:avri-commander': { label: '🎖️ מפקד — סמכותי וחד',      voice: 'he-IL-AvriNeural', rate: '+5%',  pitch: '-5Hz', volume: '+25%' },
 };
 
 // המרת מקדם speed (0.5–2.0, כפי שמגיע מהלקוח) להפרש אחוזים יחסי לפרופיל
@@ -1186,14 +1186,16 @@ function _fetchEdgeTTS(text, profile, speed) {
   return new Promise((resolve, reject) => {
     const tmpFile = path.join(os.tmpdir(), 'tts_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.mp3');
     const rate = _speedFactorToRateOffset(profile.rate, speed || 1.0);
+    const volume = profile.volume || '+0%'; // ✅ עוצמה — ברירת מחדל ניטרלית לכל הקולות הקיימים
     const args = [
       '--voice', profile.voice,
       '--rate', rate,
       '--pitch', profile.pitch,
+      '--volume', volume,
       '--text', text,
       '--write-media', tmpFile,
     ];
-    log('🎤', 'edge-tts: ' + text.slice(0,40) + ' [voice=' + profile.voice + ' rate=' + rate + ' pitch=' + profile.pitch + ']');
+    log('🎤', 'edge-tts: ' + text.slice(0,40) + ' [voice=' + profile.voice + ' rate=' + rate + ' pitch=' + profile.pitch + ' volume=' + volume + ']');
 
     const proc = spawn('edge-tts', args, { timeout: 15000 });
     let errBuf = '';
