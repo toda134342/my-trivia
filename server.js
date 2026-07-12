@@ -1189,9 +1189,9 @@ function _fetchEdgeTTS(text, profile, speed) {
     const volume = profile.volume || '+0%'; // ✅ עוצמה — ברירת מחדל ניטרלית לכל הקולות הקיימים
     const args = [
       '--voice', profile.voice,
-      '--rate', rate,
-      '--pitch', profile.pitch,
-      '--volume', volume,
+      '--rate=' + rate,
+      '--pitch=' + profile.pitch,
+      '--volume=' + volume,
       '--text', text,
       '--write-media', tmpFile,
     ];
