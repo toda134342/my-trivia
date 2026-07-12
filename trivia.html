@@ -6668,7 +6668,7 @@ function jumpMemory() {
 
 const SETTINGS_KEYS = ['trivia_theme','trivia_fs','trivia_voice','trivia_voice_rate','trivia_voice_pitch',
   'trivia_voice_tab','trivia_tts','trivia_narrator_v2','applauseSettings','mixedCats',
-  'trivia_custom_cats','trivia_cd_length','trivia_presets'];
+  'trivia_custom_cats','trivia_cd_length','trivia_presets','trivia_zinger_chance'];
 
 // שמור הגדרה אחת לשרת — השרת הוא מקור האמת היחיד; localStorage משמש רק כגיבוי במצב לא מקוון
 function saveSettingToServer(key, value) {
@@ -6766,6 +6766,7 @@ function applySettings(s) {
   if (s['mixedCats'])          { try { localStorage.setItem('mixedCats', s['mixedCats']); } catch {} }
   if (s['trivia_custom_cats']) { try { localStorage.setItem('trivia_custom_cats', s['trivia_custom_cats']); } catch {} }
   if (s['trivia_cd_length'])   { try { localStorage.setItem('trivia_cd_length', s['trivia_cd_length']); } catch {} }
+  if (s['trivia_zinger_chance'] !== undefined) { vpZingerChance = parseFloat(s['trivia_zinger_chance']); try { localStorage.setItem('trivia_zinger_chance', s['trivia_zinger_chance']); } catch {} if (typeof renderZingerButtons === 'function') renderZingerButtons(); }
   if (s['trivia_presets'])     { try { localStorage.setItem('trivia_presets', s['trivia_presets']); if (typeof renderPresets === 'function') renderPresets(); } catch {} }
 }
 
@@ -7876,6 +7877,13 @@ function maybeAddHotseatBanner(d) {
     </div>
   </div>
 
+  <!-- ✅ תדירות עקיצות/מחמאות מהקריין -->
+  <div style="margin-bottom:18px;">
+    <div style="font-size:0.92rem;color:var(--text);font-weight:600;margin-bottom:6px;">🎭 עקיצות ומחמאות מהקריין</div>
+    <div id="vp-zinger-buttons" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+    <div style="font-size:0.72rem;color:var(--muted);margin-top:4px;">כשמתאים, הקריין יעקוץ מי שטעה או יחמיא למי שצדק</div>
+  </div>
+
   <!-- אישור -->
   <div style="display:flex;gap:8px;">
     <button onclick="confirmVoicePanel()" style="flex:2;padding:11px;border-radius:10px;border:none;background:var(--blue);color:#fff;font-size:1rem;cursor:pointer;font-weight:700;">✓ אישור</button>
@@ -7899,6 +7907,7 @@ const VOICE_LABELS = {
 let vpPendingVoice = null;
 let vpRate  = parseFloat(localStorage.getItem('trivia_voice_rate')  || '1');
 let vpPitch = parseFloat(localStorage.getItem('trivia_voice_pitch') || '1');
+let vpZingerChance = parseFloat(localStorage.getItem('trivia_zinger_chance') || '0.35'); // ✅ תדירות עקיצות/מחמאות
 
 function openVoicePanel() {
   vpPendingVoice = selectedVoiceName;
@@ -7908,6 +7917,7 @@ function openVoicePanel() {
   const rateLabel  = document.getElementById('vp-rate-label');
   if (rateSlider) rateSlider.value = vpRate || 1;
   if (rateLabel)  rateLabel.textContent = (vpRate || 1).toFixed(2).replace(/0$/,'').replace(/\.$/,'.0') + 'x';
+  renderZingerButtons();
   document.getElementById('voice-panel-overlay').style.display = 'block';
   document.getElementById('voice-panel').style.display = 'block';
   // רענן את הרשימה מהשרת בכל פתיחה — מבטיח עדכניות
@@ -8005,6 +8015,29 @@ function onVpRateInput(val) {
     const audio = new Audio('/tts?' + params);
     audio.play().catch(() => { ttsLog('onVpRateInput test play failed'); });
   }, 400);
+}
+
+// ✅ בוחר תדירות עקיצות/מחמאות — כפתורים בדידים (לא סליידר) לבחירה ברורה
+const ZINGER_PRESETS = [
+  { val: 0,    label: 'כבוי' },
+  { val: 0.15, label: 'מעט' },
+  { val: 0.35, label: 'רגיל' },
+  { val: 0.6,  label: 'הרבה' },
+  { val: 1.0,  label: 'תמיד' },
+];
+function renderZingerButtons() {
+  const el = document.getElementById('vp-zinger-buttons');
+  if (!el) return;
+  el.innerHTML = ZINGER_PRESETS.map(p => {
+    const active = Math.abs(p.val - vpZingerChance) < 0.001;
+    return `<button onclick="setZingerChance(${p.val})" style="flex:1;min-width:60px;padding:9px 6px;border-radius:8px;border:1px solid ${active?'var(--blue)':'var(--border)'};background:${active?'var(--blue)':'var(--bg)'};color:${active?'#fff':'var(--text)'};font-size:0.85rem;font-weight:${active?'700':'400'};cursor:pointer;">${p.label}</button>`;
+  }).join('');
+}
+function setZingerChance(val) {
+  vpZingerChance = val;
+  try { localStorage.setItem('trivia_zinger_chance', String(val)); } catch {}
+  saveSettingToServer('trivia_zinger_chance', String(val));
+  renderZingerButtons();
 }
 
 // stub functions for backward compatibility

@@ -130,7 +130,7 @@ const NARRATOR_COMPLIMENT = [
   '{name}, כל הכבוד, מדויק לחלוטין',
   'מכבד את זה {name}, ברצינות',
 ];
-const ZINGER_CHANCE = 0.35; // ✅ סיכוי לעקיצה/מחמאה בכל reveal — לא בכל סיבוב, כדי לשמור על אפקט הפתעה
+const ZINGER_CHANCE_DEFAULT = 0.35; // ✅ ברירת מחדל אם לא נבחרה הגדרה — ניתן לשנות בפאנל הקול (trivia_zinger_chance)
 
 
 // ===== GATEWAY — ROOMS & PASSWORDS =====
@@ -751,7 +751,8 @@ function revealAnswer() {
   // ראו handleAnswer), אז אי אפשר לעשות pre-warm לזה מראש כמו לשאר הטקסטים; זה אומר
   // שבסיבוב עם עקיצה/מחמאה יש עיכוב קטן וסביר בהתחלת הקראת התשובה (cache miss חד-פעמי).
   let narratorZinger = null;
-  if (gameMode !== 'vote' && Math.random() < ZINGER_CHANCE) {
+  const zingerChance = (appSettings && appSettings.trivia_zinger_chance !== undefined) ? parseFloat(appSettings.trivia_zinger_chance) : ZINGER_CHANCE_DEFAULT;
+  if (gameMode !== 'vote' && Math.random() < zingerChance) {
     const answered = Object.values(players).filter(p => p.answered && p.phone !== 'admin');
     const wrong = answered.filter(p => p._chosen !== q.correct);
     const right = answered.filter(p => p._chosen === q.correct);
