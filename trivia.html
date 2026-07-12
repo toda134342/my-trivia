@@ -2213,7 +2213,7 @@ function spawnBubble(player) {
 
   activeBubbles.push({
     el, av: el.querySelector('.b-av'),
-    playerId: player.callId,
+    playerId: player.callId, name: player.name,
     color, shape,
     x, y, vx, vy,
     life: 0, phase: Math.random()*Math.PI*2,
@@ -2297,6 +2297,7 @@ const TAG_REACTIONS = [
   {e:'🤦',t:'איך?!',c:'#8b5cf6'},{e:'🏆',t:'אחזתי אותה!',c:'#f5c842'},
 ];
 const TAG_FLEE_EMOJIS = ['💨','🏃','😅','🫣','👀','😬','🙀','🤸'];
+const TAG_CHASE_EMOJIS = ['😤','💪','🎯','🔥','👊','🏃','😈','⚡'];
 
 function startTagGame() {
   if (activeBubbles.length < 2) return;
@@ -2322,13 +2323,18 @@ function startTagGame() {
       : activeBubbles[Math.floor(Math.random()*activeBubbles.length)];
     if (!target) return;
     const isIt = target.playerId === tagItId;
-    // ספרינט לכיוון הקורבן הקרוב אם זה IT, אחרת כיוון אקראי
+    // ✅ מודל כתר: אם זו המוכתרת — ספרינט בריחה מהרודף הקרוב. אחרת — כיוון אקראי (או מרדף קל).
     let angle;
     if (isIt) {
       const notIt = activeBubbles.filter(b => b.playerId !== tagItId);
       if (notIt.length) {
-        const prey = notIt[Math.floor(Math.random()*notIt.length)];
-        const dx = prey.x - target.x, dy = prey.y - target.y;
+        // מוצאים את הרודף הכי קרוב ובורחים ממנו (לא אליו!)
+        let nearestChaser = notIt[0], nearestD = Infinity;
+        notIt.forEach(b => {
+          const d = Math.hypot(b.x-target.x, b.y-target.y);
+          if (d < nearestD) { nearestD = d; nearestChaser = b; }
+        });
+        const dx = target.x - nearestChaser.x, dy = target.y - nearestChaser.y;
         angle = Math.atan2(dy, dx);
       } else {
         angle = Math.random() * Math.PI * 2;
@@ -2340,7 +2346,7 @@ function startTagGame() {
     target.vx += Math.cos(angle) * power;
     target.vy += Math.sin(angle) * power;
     target.targetScale = isIt ? 1.7 : 1.45;
-    const sprintEmojis = isIt ? ['💨','⚡','🔥','💥','🏃','😈'] : ['💨','⚡','🚀','💥','😅','🏃'];
+    const sprintEmojis = isIt ? TAG_FLEE_EMOJIS : TAG_CHASE_EMOJIS;
     spawnEmoji(target.x, target.y - 5, sprintEmojis[Math.floor(Math.random()*sprintEmojis.length)]);
     if (isIt) spawnEmoji(target.x + 3, target.y - 2, sprintEmojis[Math.floor(Math.random()*sprintEmojis.length)]);
     setTimeout(() => { if(target) target.targetScale = 1; }, isIt ? 600 : 400);
@@ -2372,7 +2378,18 @@ function showTagIndicator() {
   document.body.appendChild(d);
 }
 
-function setTagIt(playerId, silent) {
+// ✅ משפטים מצחיקים עם שמות אמיתיים — {catcher} = מי שתפס את הכתר, {prev} = מי שהחזיק בו קודם
+const TAG_CROWN_PHRASES = [
+  '{catcher} תפס/ה את הכתר מ{prev}!',
+  '👑 {catcher} עכשיו המלך/ה החדש/ה!',
+  '{prev} איבד/ה את הכתר ל{catcher}!',
+  'מהפכה! {catcher} הדיח/ה את {prev}!',
+  '{catcher} רץ/ה מהר יותר מ{prev}!',
+  'הכתר עבר ל{catcher}, {prev} — נסה/י שוב!',
+  '{catcher} תפס/ה, עכשיו כולם רודפים אחריו/ה!',
+  'ביי ביי {prev}, שלום {catcher} המוכתר/ת החדש/ה!',
+];
+function setTagIt(playerId, silent, prevName) {
   document.querySelectorAll('.b-it-crown,.b-it-label').forEach(e => e.remove());
   tagItId = playerId;
   tagCooldown[playerId] = Date.now() + 2500;
@@ -2397,15 +2414,17 @@ function setTagIt(playerId, silent) {
   label.textContent = 'IT';
   b.el.appendChild(label);
   if (!silent) {
-    const rx = TAG_REACTIONS[Math.floor(Math.random()*TAG_REACTIONS.length)];
-    showTagBanner(rx.e, rx.t, rx.c);
+    // ✅ באנר מצחיק עם שם השחקן שתפס (ושם הקודם, אם יש)
+    const tmpl = TAG_CROWN_PHRASES[Math.floor(Math.random()*TAG_CROWN_PHRASES.length)];
+    const text = tmpl.replace('{catcher}', b.name || 'מישהו').replace('{prev}', prevName || 'הקודם');
+    showTagBanner('👑', text, '#f5c842');
     for (let i = 0; i < 6; i++) {
       setTimeout(() => spawnEmoji(b.x+(Math.random()-0.5)*14, b.y+(Math.random()-0.5)*14,
         ['😱','💥','🔥','💨','⚡','🌟'][i]), i*70);
     }
     b.av.style.animation = 'spin360 0.6s ease-in-out';
     setTimeout(() => { if (b.av) b.av.style.animation = ''; }, 700);
-    // Panic sprint when tagged
+    // Panic sprint when tagged — עכשיו בורח, אז זה תואם למודל הכתר
     const angle = Math.random() * Math.PI * 2;
     b.vx += Math.cos(angle) * 0.22;
     b.vy += Math.sin(angle) * 0.22;
@@ -2447,30 +2466,31 @@ function updateTagPhysics() {
   const cdx = nearest.x - it.x, cdy = nearest.y - it.y;
   const cd = Math.max(1, Math.sqrt(cdx*cdx + cdy*cdy));
   const chaseStr = cd < 30 ? 0.022 : 0.014; // מהיר יותר כשקרוב!
-  it.vx += (cdx/cd) * chaseStr;
-  it.vy += (cdy/cd) * chaseStr;
+  // ✅ מודל "כתר": הבועה המוכתרת בורחת מהקרובה אליה (לא רודפת!)
+  it.vx -= (cdx/cd) * chaseStr;
+  it.vy -= (cdy/cd) * chaseStr;
 
-  // All others flee
+  // ✅ כל האחרים רודפים אחרי המוכתרת (לא בורחים!)
   activeBubbles.forEach(b => {
     if (b.playerId === tagItId) return;
     const fdx = b.x - it.x, fdy = b.y - it.y;
     const fd = Math.max(1, Math.sqrt(fdx*fdx + fdy*fdy));
-    // בריחה חזקה יותר
-    const fleeStr = fd < 18 ? 0.026 : fd < 35 ? 0.012 : 0.003;
-    b.vx += (fdx/fd) * fleeStr;
-    b.vy += (fdy/fd) * fleeStr;
-    // Occasional panic sprint (flee burst) — תכוף יותר כשה-IT קרוב
-    const panicChance = fd < 15 ? 0.025 : fd < 25 ? 0.012 : 0.004;
-    if (Math.random() < panicChance) {
-      b.vx += (fdx/fd) * 0.19;
-      b.vy += (fdy/fd) * 0.19;
+    // מרדף חזק יותר ככל שקרוב יותר
+    const chaseStr2 = fd < 18 ? 0.026 : fd < 35 ? 0.012 : 0.003;
+    b.vx -= (fdx/fd) * chaseStr2;
+    b.vy -= (fdy/fd) * chaseStr2;
+    // ספרינט מרדף מזדמן — תכוף יותר כשקרוב לתפוס
+    const chaseBurstChance = fd < 15 ? 0.025 : fd < 25 ? 0.012 : 0.004;
+    if (Math.random() < chaseBurstChance) {
+      b.vx -= (fdx/fd) * 0.19;
+      b.vy -= (fdy/fd) * 0.19;
       b.targetScale = 1.5;
       setTimeout(() => { if(b) b.targetScale = 1; }, 300);
-      spawnEmoji(b.x, b.y - 5, TAG_FLEE_EMOJIS[Math.floor(Math.random()*TAG_FLEE_EMOJIS.length)]);
+      spawnEmoji(b.x, b.y - 5, TAG_CHASE_EMOJIS[Math.floor(Math.random()*TAG_CHASE_EMOJIS.length)]);
     }
     // Tag check
     if (fd < 12 && now > (tagCooldown[b.playerId] || 0) && now > (tagCooldown[tagItId] || 0)) {
-      setTagIt(b.playerId, false);
+      setTagIt(b.playerId, false, activeBubbles.find(x=>x.playerId===tagItId)?.name);
     }
   });
 }
