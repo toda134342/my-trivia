@@ -1112,13 +1112,13 @@ const os = require('os');
 // pitch — שינוי גובה יחסי, לדוגמה '+5Hz' / '-15Hz'
 const EDGE_VOICES = {
   'edge:avri':           { label: '👨 אברי — קריין רגיל',        voice: 'he-IL-AvriNeural', rate: '+0%',  pitch: '+0Hz'  },
-  'edge:avri-deep':      { label: '🎤 ד"ר — קריין עמוק ונמוך',   voice: 'he-IL-AvriNeural', rate: '-12%', pitch: '-6Hz'  },
+  'edge:avri-deep':      { label: '🎤 ד"ר — קריין עמוק ונמוך',   voice: 'he-IL-AvriNeural', rate: '-8%',  pitch: '-18Hz' },
   'edge:avri-fast':      { label: '⚡ ספרינטר — קריין מהיר',     voice: 'he-IL-AvriNeural', rate: '+30%', pitch: '+0Hz'  },
-  'edge:avri-warm':      { label: '🎙️ חבר — קריין חם ונעים',    voice: 'he-IL-AvriNeural', rate: '-10%', pitch: '+0Hz'  },
+  'edge:avri-warm':      { label: '🎙️ חבר — קריין חם ונעים',    voice: 'he-IL-AvriNeural', rate: '-8%',  pitch: '-6Hz'  },
   'edge:hila':           { label: '👩 הילה — קריינית רגילה',    voice: 'he-IL-HilaNeural', rate: '+0%',  pitch: '+0Hz'  },
-  'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',     voice: 'he-IL-HilaNeural', rate: '-10%', pitch: '+0Hz'  },
+  'edge:hila-warm':      { label: '🎙️ הילה — קריינית חמה',     voice: 'he-IL-HilaNeural', rate: '-8%',  pitch: '-6Hz'  },
   'edge:hila-energetic': { label: '⚡ הילה — קריינית אנרגטית', voice: 'he-IL-HilaNeural', rate: '+25%', pitch: '+15Hz' },
-  'edge:avri-commander': { label: '🎖️ מפקד — סמכותי וחד',      voice: 'he-IL-AvriNeural', rate: '+5%',  pitch: '-5Hz', volume: '+25%' },
+  'edge:avri-commander': { label: '🎖️ מפקד — סמכותי וחד',      voice: 'he-IL-AvriNeural', rate: '+8%',  pitch: '-12Hz', volume: '+30%' },
 };
 
 // המרת מקדם speed (0.5–2.0, כפי שמגיע מהלקוח) להפרש אחוזים יחסי לפרופיל
