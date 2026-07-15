@@ -732,6 +732,11 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
         font-family:'Rubik',sans-serif;font-size:0.8rem;padding:2px 8px;
         border:1px solid var(--border);border-radius:6px;transition:color 0.2s;
       " onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--muted)'">יציאה ↩</button>
+      <button onclick="openPhrasePanel()" style="
+        background:none;color:var(--muted);cursor:pointer;
+        font-family:'Rubik',sans-serif;font-size:0.8rem;padding:2px 8px;
+        border:1px solid var(--border);border-radius:6px;margin-inline-end:6px;
+      ">🎭 עקיצות ומחמאות</button>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;">
         <span id="gw-bar-label" style="color:var(--muted);">🏠 <span id="gw-bar-room" style="color:var(--gold);font-weight:700;"></span></span>
         <span id="gw-room-stats" style="display:none;font-size:0.72rem;color:var(--muted);"></span>
@@ -7911,6 +7916,32 @@ function maybeAddHotseatBanner(d) {
   </div>
 </div>
 
+<!-- ✅ פאנל ניהול עקיצות/מחמאות פר-חדר — ניתן להשהות פריטים קבועים (לא למחוק!) ולהוסיף/למחוק משפטים אישיים -->
+<div id="phrase-panel-overlay" onclick="closePhrasePanel()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9000;"></div>
+<div id="phrase-panel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9001;background:var(--s1);border:1px solid var(--border);border-radius:16px;padding:20px 18px 16px;width:min(96vw,440px);max-height:85vh;overflow-y:auto;direction:rtl;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+    <h3 style="margin:0;font-size:1.05rem;">🎭 עקיצות ומחמאות — חדר</h3>
+    <button onclick="closePhrasePanel()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--muted);">✕</button>
+  </div>
+  <div style="font-size:0.78rem;color:var(--muted);margin-bottom:14px;">
+    אפשר "להשהות" משפטים קבועים (לא יישמעו בחדר שלך, אבל לא נמחקים מהמאגר הכללי) ולהוסיף משפטים משלך.
+  </div>
+
+  <div style="display:flex;gap:8px;margin-bottom:14px;">
+    <button id="pp-tab-roast" onclick="ppSwitchTab('roast')" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--blue);color:#fff;cursor:pointer;font-weight:700;">😬 עקיצות</button>
+    <button id="pp-tab-compliment" onclick="ppSwitchTab('compliment')" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer;">🌟 מחמאות</button>
+  </div>
+
+  <!-- הוספת משפט מותאם -->
+  <div style="display:flex;gap:6px;margin-bottom:14px;">
+    <input id="pp-new-phrase" class="inp" type="text" placeholder="לדוגמה: {name}, וואו איזה ניחוש" style="flex:1;">
+    <button onclick="ppAddPhrase()" style="padding:0 14px;border-radius:8px;border:none;background:var(--green);color:#fff;cursor:pointer;font-weight:700;">+ הוסף</button>
+  </div>
+  <div style="font-size:0.72rem;color:var(--muted);margin-bottom:10px;">חייב להכיל <b>{name}</b> — זה יוחלף בשם השחקן בפועל</div>
+
+  <div id="pp-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+</div>
+
 <script>
 // ===== VOICE PANEL — קולות פנימיים של המערכת (שרת בלבד, ללא תלות בדפדפן) =====
 // הרשימה בפועל נטענת דינמית מ-/tts-voices (ראה availableVoices ב-loadVoicesList).
@@ -8058,6 +8089,103 @@ function setZingerChance(val) {
   try { localStorage.setItem('trivia_zinger_chance', String(val)); } catch {}
   saveSettingToServer('trivia_zinger_chance', String(val));
   renderZingerButtons();
+}
+
+// ===== פאנל עקיצות/מחמאות פר-חדר =====
+let ppData = null; // {roast, compliment, disabled:{roast,compliment}, custom:{roast,compliment}}
+let ppTab = 'roast';
+
+function openPhrasePanel() {
+  if (!gwRoomId) { alert('צריך להיות מחובר לחדר כדי לנהל עקיצות/מחמאות'); return; }
+  document.getElementById('phrase-panel-overlay').style.display = 'block';
+  document.getElementById('phrase-panel').style.display = 'block';
+  ppLoad();
+}
+function closePhrasePanel() {
+  document.getElementById('phrase-panel-overlay').style.display = 'none';
+  document.getElementById('phrase-panel').style.display = 'none';
+}
+function ppSwitchTab(tab) {
+  ppTab = tab;
+  document.getElementById('pp-tab-roast').style.background = tab === 'roast' ? 'var(--blue)' : 'var(--bg)';
+  document.getElementById('pp-tab-roast').style.color = tab === 'roast' ? '#fff' : 'var(--text)';
+  document.getElementById('pp-tab-compliment').style.background = tab === 'compliment' ? 'var(--blue)' : 'var(--bg)';
+  document.getElementById('pp-tab-compliment').style.color = tab === 'compliment' ? '#fff' : 'var(--text)';
+  ppRenderList();
+}
+async function ppLoad() {
+  document.getElementById('pp-list').innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px;">טוען...</div>';
+  try {
+    const r = await fetch(`/room-data/${encodeURIComponent(gwRoomId)}/phrases`);
+    ppData = await r.json();
+    ppRenderList();
+  } catch {
+    document.getElementById('pp-list').innerHTML = '<div style="text-align:center;color:var(--red);padding:20px;">שגיאה בטעינה</div>';
+  }
+}
+function ppRenderList() {
+  if (!ppData) return;
+  const list = document.getElementById('pp-list');
+  const base = ppData[ppTab] || [];
+  const disabled = new Set((ppData.disabled && ppData.disabled[ppTab]) || []);
+  const custom = (ppData.custom && ppData.custom[ppTab]) || [];
+  let html = '';
+  base.forEach((text, i) => {
+    const isDisabled = disabled.has(i);
+    html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;background:var(--bg);opacity:${isDisabled?'0.45':'1'};">
+      <button onclick="ppTogglePhrase(${i},${!isDisabled})" style="flex-shrink:0;width:40px;height:22px;border-radius:11px;border:none;cursor:pointer;background:${isDisabled?'var(--muted)':'var(--green)'};position:relative;">
+        <span style="position:absolute;top:2px;${isDisabled?'right':'left'}:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:0.2s;"></span>
+      </button>
+      <span style="flex:1;font-size:0.85rem;${isDisabled?'text-decoration:line-through':''}">${text}</span>
+    </div>`;
+  });
+  if (custom.length) {
+    html += `<div style="font-size:0.78rem;color:var(--muted);margin:10px 0 4px;">משפטים שהוספת:</div>`;
+    custom.forEach((text, i) => {
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;background:rgba(139,92,246,0.1);border:1px solid #8b5cf655;">
+        <button onclick="ppDeletePhrase(${i})" style="flex-shrink:0;background:none;border:none;color:var(--red);cursor:pointer;font-size:1.1rem;">🗑</button>
+        <span style="flex:1;font-size:0.85rem;">${text}</span>
+      </div>`;
+    });
+  }
+  list.innerHTML = html || '<div style="text-align:center;color:var(--muted);padding:20px;">אין משפטים</div>';
+}
+async function ppTogglePhrase(index, disabled) {
+  const auth = gwIsAdmin ? { key: '345345' } : { password: gwRoomPassword };
+  try {
+    await fetch(`/room-data/${encodeURIComponent(gwRoomId)}/phrase-toggle`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...auth, type: ppTab, index, disabled }),
+    });
+    await ppLoad();
+  } catch { alert('שגיאה בעדכון'); }
+}
+async function ppAddPhrase() {
+  const input = document.getElementById('pp-new-phrase');
+  const text = (input.value || '').trim();
+  if (!text) return;
+  if (!text.includes('{name}')) { alert('המשפט חייב להכיל {name}'); return; }
+  const auth = gwIsAdmin ? { key: '345345' } : { password: gwRoomPassword };
+  try {
+    const r = await fetch(`/room-data/${encodeURIComponent(gwRoomId)}/phrase-add`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...auth, type: ppTab, text }),
+    });
+    const d = await r.json();
+    if (!d.ok) { alert(d.error || 'שגיאה'); return; }
+    input.value = '';
+    await ppLoad();
+  } catch { alert('שגיאה בהוספה'); }
+}
+async function ppDeletePhrase(idx) {
+  const auth = gwIsAdmin ? { key: '345345' } : { password: gwRoomPassword };
+  try {
+    await fetch(`/room-data/${encodeURIComponent(gwRoomId)}/phrase/${ppTab}/${idx}`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(auth),
+    });
+    await ppLoad();
+  } catch { alert('שגיאה במחיקה'); }
 }
 
 // stub functions for backward compatibility

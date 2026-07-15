@@ -215,6 +215,31 @@ let questionTimer = null;
 let clients = [];
 let firstCorrect = null; // headtohead mode - who answered first
 let activeRoomId = null; // החדר הפעיל הנוכחי — אם null, משחק מהמאגר הכללי
+
+// ✅ הגדרות/מאגרים פר-חדר — בעל חדר יכול להתאים אישית בלי לפגוע במאגר המשותף:
+// - קול/עיצוב/תדירות עקיצות: החדר שומר ערך משלו (roomData.settings), לא נוגע בגלובלי.
+// - עקיצות/מחמאות: החדר יכול "להשהות" (disable) פריט מהמאגר הקבוע (לא למחוק אותו!), וגם
+//   להוסיף משפטים משלו (roomData.customPhrases) שכן ניתנים למחיקה חופשית כי הם שלו.
+// המאגרים הקבועים עצמם (NARRATOR_ROAST/NARRATOR_COMPLIMENT/EDGE_VOICES) לא נחשפים לשום
+// נתיב מחיקה — רק path של "toggle" (השהה/הפעל) ו-CRUD על roomData.customPhrases בלבד.
+function getRoomSetting(key, fallback) {
+  if (activeRoomId) {
+    const data = loadRoomData(activeRoomId);
+    if (data && data.settings && data.settings[key] !== undefined) return data.settings[key];
+  }
+  return (appSettings && appSettings[key] !== undefined) ? appSettings[key] : fallback;
+}
+function getEffectivePhrasePool(type) {
+  // type: 'roast' | 'compliment'
+  const base = type === 'roast' ? NARRATOR_ROAST : NARRATOR_COMPLIMENT;
+  if (!activeRoomId) return base;
+  const data = loadRoomData(activeRoomId) || {};
+  const disabled = new Set((data.disabledPhrases && data.disabledPhrases[type]) || []);
+  const custom = (data.customPhrases && data.customPhrases[type]) || [];
+  const filtered = base.filter((_, i) => !disabled.has(i));
+  return filtered.concat(custom);
+}
+
 let gamePaused = false;
 let pausedTimeLeft = 0;
 let pauseStartTime = 0;
@@ -635,7 +660,7 @@ function showQuestion() {
   // הספירה לאחור (3-8 שניות) נותנת לשרת זמן לייצר ולשמור TTS במטמון לפני שהלקוח יבקש אותו.
   (() => {
     const qText = buildQuestionTTSText(q);
-    const qVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    const qVoice = _lastClientVoice || getRoomSetting('trivia_voice', 'edge:avri');
     fetchTTS(qText, qVoice, _lastClientSpeed).catch(() => {});
     log('🔮', `pre-warming שאלה ${currentQuestion + 1}: "${qText.slice(0, 50)}" [voice=${qVoice}]`);
   })();
@@ -685,7 +710,7 @@ function beginAnswerWindow(roundId, timeLimit) {
   const q = questions[currentQuestion];
   if (q) {
     const revealText = `התשובה הנכונה היא: ${q.a[q.correct]}`;
-    const voice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    const voice = _lastClientVoice || getRoomSetting('trivia_voice', 'edge:avri');
     fetchTTS(revealText, voice, _lastClientSpeed).catch(() => {});
     log('🔊', `pre-warming reveal TTS (${timeLimit}s מראש): "${revealText.slice(0,40)}" [voice=${voice}]`);
   }
@@ -696,7 +721,7 @@ function beginAnswerWindow(roundId, timeLimit) {
   const nextQ = questions[currentQuestion + 1];
   if (nextQ) {
     const nextText = buildQuestionTTSText(nextQ);
-    const nextVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    const nextVoice = _lastClientVoice || getRoomSetting('trivia_voice', 'edge:avri');
     fetchTTS(nextText, nextVoice, _lastClientSpeed).catch(() => {});
     log('🔮', `pre-warming מוקדם שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
   }
@@ -707,7 +732,7 @@ function beginAnswerWindow(roundId, timeLimit) {
   const nextNextQ = questions[currentQuestion + 2];
   if (nextNextQ) {
     const nnText = buildQuestionTTSText(nextNextQ);
-    const nnVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    const nnVoice = _lastClientVoice || getRoomSetting('trivia_voice', 'edge:avri');
     fetchTTS(nnText, nnVoice, _lastClientSpeed).catch(() => {});
     log('🔮🔮', `pre-warming מוקדם מאוד שאלה ${currentQuestion + 3}: "${nnText.slice(0, 50)}"`);
   }
@@ -751,17 +776,17 @@ function revealAnswer() {
   // ראו handleAnswer), אז אי אפשר לעשות pre-warm לזה מראש כמו לשאר הטקסטים; זה אומר
   // שבסיבוב עם עקיצה/מחמאה יש עיכוב קטן וסביר בהתחלת הקראת התשובה (cache miss חד-פעמי).
   let narratorZinger = null;
-  const zingerChance = (appSettings && appSettings.trivia_zinger_chance !== undefined) ? parseFloat(appSettings.trivia_zinger_chance) : ZINGER_CHANCE_DEFAULT;
+  const zingerChance = parseFloat(getRoomSetting('trivia_zinger_chance', ZINGER_CHANCE_DEFAULT));
   if (gameMode !== 'vote' && Math.random() < zingerChance) {
     const answered = Object.values(players).filter(p => p.answered && p.phone !== 'admin');
     const wrong = answered.filter(p => p._chosen !== q.correct);
     const right = answered.filter(p => p._chosen === q.correct);
     const preferRoast = Math.random() < 0.5;
     let pool = null, target = null;
-    if (preferRoast && wrong.length) { target = wrong[Math.floor(Math.random() * wrong.length)]; pool = NARRATOR_ROAST; }
-    else if (right.length) { target = right[Math.floor(Math.random() * right.length)]; pool = NARRATOR_COMPLIMENT; }
-    else if (wrong.length) { target = wrong[Math.floor(Math.random() * wrong.length)]; pool = NARRATOR_ROAST; }
-    if (target && pool) {
+    if (preferRoast && wrong.length) { target = wrong[Math.floor(Math.random() * wrong.length)]; pool = getEffectivePhrasePool('roast'); }
+    else if (right.length) { target = right[Math.floor(Math.random() * right.length)]; pool = getEffectivePhrasePool('compliment'); }
+    else if (wrong.length) { target = wrong[Math.floor(Math.random() * wrong.length)]; pool = getEffectivePhrasePool('roast'); }
+    if (target && pool && pool.length) {
       narratorZinger = pool[Math.floor(Math.random() * pool.length)].replace('{name}', target.name);
       log('🎭', `עקיצה/מחמאה: "${narratorZinger}"`);
     }
@@ -773,7 +798,7 @@ function revealAnswer() {
   const nextQ = questions[currentQuestion + 1];
   if (nextQ) {
     const nextText = buildQuestionTTSText(nextQ);
-    const nextVoice = _lastClientVoice || (appSettings && appSettings.trivia_voice) || 'edge:avri';
+    const nextVoice = _lastClientVoice || getRoomSetting('trivia_voice', 'edge:avri');
     fetchTTS(nextText, nextVoice, _lastClientSpeed).catch(() => {});
     log('🔮', `pre-warming שאלה ${currentQuestion + 2}: "${nextText.slice(0, 50)}" [voice=${nextVoice}]`);
   }
@@ -1510,18 +1535,49 @@ app.get('/tts-voices', (req, res) => {
 });
 
 // ===== הגדרות גלובליות (קול, ערכת נושא, וכו') — אותו מקור לכל המחשבים =====
+// ✅ מפתחות אלה "פר-חדר" — כשיש חדר פעיל, הם נשמרים בתוך נתוני החדר (לא בקובץ הגלובלי),
+// כדי שבעל חדר יוכל להתאים אישית את הקריין/עיצוב של החדר שלו בלי להשפיע על חדרים אחרים
+// או על משחקים מהמאגר הכללי. שאר ההגדרות (למשל TTS on/off, presets) נשארות גלובליות.
+const ROOM_SCOPED_SETTING_KEYS = ['trivia_voice', 'trivia_voice_rate', 'trivia_voice_pitch', 'trivia_theme', 'trivia_fs', 'trivia_zinger_chance'];
+
 app.get('/settings', (req, res) => {
-  res.json(appSettings);
+  if (!activeRoomId) return res.json(appSettings);
+  const roomData = loadRoomData(activeRoomId) || {};
+  const merged = { ...appSettings };
+  ROOM_SCOPED_SETTING_KEYS.forEach(k => {
+    if (roomData.settings && roomData.settings[k] !== undefined) merged[k] = roomData.settings[k];
+  });
+  res.json(merged);
 });
 
 app.post('/settings', (req, res) => {
   const body = req.body || {};
   let changed = false;
-  Object.keys(body).forEach(k => {
-    if (appSettings[k] !== body[k]) { appSettings[k] = body[k]; changed = true; }
-  });
+  if (activeRoomId) {
+    // ✅ יש חדר פעיל — מפתחות פר-חדר נשמרים בתוך נתוני החדר, לא גלובלית
+    const roomKeys = {}, globalKeys = {};
+    Object.keys(body).forEach(k => {
+      if (ROOM_SCOPED_SETTING_KEYS.includes(k)) roomKeys[k] = body[k];
+      else globalKeys[k] = body[k];
+    });
+    if (Object.keys(roomKeys).length) {
+      const data = loadRoomData(activeRoomId) || { roomId: activeRoomId, questions: [] };
+      data.settings = { ...(data.settings || {}), ...roomKeys };
+      saveRoomData(activeRoomId, data);
+      changed = true;
+      log('⚙️', `הגדרות חדר "${activeRoomId}" עודכנו: ${Object.keys(roomKeys).join(', ')}`);
+    }
+    Object.keys(globalKeys).forEach(k => {
+      if (appSettings[k] !== globalKeys[k]) { appSettings[k] = globalKeys[k]; changed = true; }
+    });
+    if (Object.keys(globalKeys).length) saveAppSettings();
+  } else {
+    Object.keys(body).forEach(k => {
+      if (appSettings[k] !== body[k]) { appSettings[k] = body[k]; changed = true; }
+    });
+    if (changed) saveAppSettings();
+  }
   if (changed) {
-    saveAppSettings();
     // דחיפה מיידית לכל המחשבים המחוברים — לא מחכים לרענון דף
     broadcast({ type: 'settings-changed', settings: body });
     log('⚙️', `הגדרות עודכנו: ${Object.keys(body).join(', ')}`);
@@ -1825,6 +1881,72 @@ app.delete('/room-data/:roomId/question/:idx', checkRoomAuth, (req, res) => {
   data.questions.splice(idx, 1);
   saveRoomData(roomId, data);
   res.json({ ok: true, total: data.questions.length });
+});
+
+// ===== ניהול עקיצות/מחמאות פר-חדר =====
+// ✅ עיקרון בסיסי: המאגר הקבוע (NARRATOR_ROAST/NARRATOR_COMPLIMENT) לא נחשף לשום נתיב
+// מחיקה — אפשר רק "להשהות" (toggle) פריט ממנו לחדר הזה. מחיקה אמיתית קיימת רק על
+// roomData.customPhrases — משפטים שהחדר עצמו הוסיף, ולכן שייכים לו ובטוח למחוק אותם.
+
+// קבל את מצב העקיצות/מחמאות של החדר: המאגר הקבוע + אילו מושהים + המשפטים המותאמים
+app.get('/room-data/:roomId/phrases', (req, res) => {
+  const { roomId } = req.params;
+  const rooms = loadRooms();
+  if (!rooms[roomId]) return res.status(404).json({ error: 'חדר לא קיים' });
+  const data = loadRoomData(roomId) || {};
+  res.json({
+    roast: NARRATOR_ROAST,
+    compliment: NARRATOR_COMPLIMENT,
+    disabled: data.disabledPhrases || { roast: [], compliment: [] },
+    custom: data.customPhrases || { roast: [], compliment: [] },
+  });
+});
+
+// השהה/הפעל משפט קבוע (לא מוחק! רק מדלג עליו בחדר הזה)
+app.post('/room-data/:roomId/phrase-toggle', checkRoomAuth, (req, res) => {
+  const { roomId } = req.params;
+  const { type, index, disabled } = req.body || {};
+  if (type !== 'roast' && type !== 'compliment') return res.json({ ok: false, error: 'type לא תקין' });
+  const base = type === 'roast' ? NARRATOR_ROAST : NARRATOR_COMPLIMENT;
+  const idx = parseInt(index);
+  if (isNaN(idx) || idx < 0 || idx >= base.length) return res.json({ ok: false, error: 'אינדקס לא חוקי' });
+  const data = loadRoomData(roomId) || { roomId, questions: [] };
+  data.disabledPhrases = data.disabledPhrases || { roast: [], compliment: [] };
+  const list = data.disabledPhrases[type] = data.disabledPhrases[type] || [];
+  const pos = list.indexOf(idx);
+  if (disabled && pos === -1) list.push(idx);
+  if (!disabled && pos !== -1) list.splice(pos, 1);
+  saveRoomData(roomId, data);
+  res.json({ ok: true, disabled: data.disabledPhrases });
+});
+
+// הוסף משפט מותאם אישית (של החדר בלבד — ניתן למחיקה חופשית כי הוא שייך לחדר)
+app.post('/room-data/:roomId/phrase-add', checkRoomAuth, (req, res) => {
+  const { roomId } = req.params;
+  const { type, text } = req.body || {};
+  if (type !== 'roast' && type !== 'compliment') return res.json({ ok: false, error: 'type לא תקין' });
+  if (!text || typeof text !== 'string' || !text.includes('{name}')) {
+    return res.json({ ok: false, error: 'המשפט חייב להכיל {name} (במקום שם השחקן)' });
+  }
+  const data = loadRoomData(roomId) || { roomId, questions: [] };
+  data.customPhrases = data.customPhrases || { roast: [], compliment: [] };
+  data.customPhrases[type] = data.customPhrases[type] || [];
+  data.customPhrases[type].push(text.trim());
+  saveRoomData(roomId, data);
+  res.json({ ok: true, custom: data.customPhrases });
+});
+
+// מחק משפט מותאם אישית של החדר (לפי אינדקס בתוך customPhrases — אף פעם לא נוגע במאגר הקבוע)
+app.delete('/room-data/:roomId/phrase/:type/:idx', checkRoomAuth, (req, res) => {
+  const { roomId, type } = req.params;
+  const idx = parseInt(req.params.idx);
+  if (type !== 'roast' && type !== 'compliment') return res.json({ ok: false, error: 'type לא תקין' });
+  const data = loadRoomData(roomId);
+  const list = data.customPhrases && data.customPhrases[type];
+  if (!list || isNaN(idx) || idx < 0 || idx >= list.length) return res.json({ ok: false, error: 'אינדקס לא חוקי' });
+  list.splice(idx, 1);
+  saveRoomData(roomId, data);
+  res.json({ ok: true, custom: data.customPhrases });
 });
 
 // עדכן שאלה בחדר
