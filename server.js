@@ -1585,6 +1585,33 @@ app.post('/settings', (req, res) => {
   res.json({ ok: true, settings: appSettings });
 });
 
+// ✅ תיקון באג אמיתי: הגדרות פר-חדר (קול/עיצוב/גופן/תדירות עקיצות) היו נכתבות לקובץ
+// הגלובלי בכל פעם שבעל חדר משנה אותן *לפני* שהתחיל משחק בפועל — כי activeRoomId
+// (המשתנה שמייצג "איזה חדר משחק כרגע בפועל") מוגדר רק בתוך startGame(), לא כשמנהלים
+// חדר מהפאנל. נתיבים אלה עובדים ישירות על נתוני החדר הספציפי בכל מצב, בלי תלות
+// ב-activeRoomId — משמשים את פאנל ניהול החדר (לפני/אחרי שהמשחק פעיל).
+app.get('/room-data/:roomId/settings', (req, res) => {
+  const { roomId } = req.params;
+  const rooms = loadRooms();
+  if (!rooms[roomId]) return res.status(404).json({ error: 'חדר לא קיים' });
+  const data = loadRoomData(roomId) || {};
+  res.json({ ok: true, settings: data.settings || {} });
+});
+app.post('/room-data/:roomId/settings', checkRoomAuth, (req, res) => {
+  const { roomId } = req.params;
+  const body = req.body || {};
+  const updates = {};
+  Object.keys(body).forEach(k => { if (ROOM_SCOPED_SETTING_KEYS.includes(k)) updates[k] = body[k]; });
+  if (!Object.keys(updates).length) return res.json({ ok: false, error: 'אין מפתחות תקינים לעדכון' });
+  const data = loadRoomData(roomId) || { roomId, questions: [] };
+  data.settings = { ...(data.settings || {}), ...updates };
+  saveRoomData(roomId, data);
+  log('⚙️', `הגדרות חדר "${roomId}" עודכנו ישירות: ${Object.keys(updates).join(', ')}`);
+  // אם זה בדיוק החדר הפעיל כרגע — דחוף עדכון גם למסך המשחק החי
+  if (activeRoomId === roomId) broadcast({ type: 'settings-changed', settings: updates });
+  res.json({ ok: true, settings: data.settings });
+});
+
 // ===== מערכת לוגים — צפייה ושליחה =====
 
 // קבלת לוגים מהלקוח (דפדפן) — מאחד הכל למקום אחד

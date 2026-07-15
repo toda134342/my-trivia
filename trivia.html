@@ -2627,9 +2627,12 @@ function requireAdmin(action) {
 // ===== שלב 3: שמירת מצב ב-sessionStorage =====
 function gwSaveState(extra = {}) {
   // שמור את כל מצב הנוכחי כדי לשרוד רענון דף
+  // ✅ תיקון: גם הסיסמה נשמרת (ב-sessionStorage בלבד, נמחקת עם סגירת הטאב) — בלעדיה,
+  // אחרי רענון דף כל שינוי הגדרות/אנשי-קשר/עקיצות היה נכשל בשקט כי gwRoomPassword חוזר ל-null.
   const state = {
     roomId: gwRoomId,
     isAdmin: gwIsAdmin,
+    roomPassword: gwRoomPassword,
     screen: currentScreen,
     gameMode,
     ...extra
@@ -2655,7 +2658,9 @@ function gwInit() {
       if (d.roomId) {
         gwRoomId = d.roomId;
         gwIsAdmin = d.isAdmin || false;
+        gwRoomPassword = d.roomPassword || null;
         gwApplySession();
+        if (typeof loadSettingsFromServer === 'function') loadSettingsFromServer(); // ✅ טען הגדרות פר-חדר גם בשחזור סשן
         // שחזר מסך אחרון (לא gateway, לא game — game ישוחזר ע"י SSE)
         const restoreScreen = d.screen && d.screen !== 'gateway' && d.screen !== 'game' ? d.screen : 'mode';
         showScreen(restoreScreen);
@@ -2786,6 +2791,7 @@ async function gwLogin() {
     gwRoomId = d.roomId;
     gwIsAdmin = d.isAdmin || false;
     gwRoomPassword = password; // שמור סיסמה לשימוש בקריאות API עתידיות
+    if (typeof loadSettingsFromServer === 'function') loadSettingsFromServer(); // ✅ טען הגדרות פר-חדר עכשיו שאנחנו יודעים לאיזה חדר נכנסנו
     // מנהל → admin/mode, משתמש חדר → room-screen
     const targetScreen = d.isAdmin ? 'mode' : 'room';
     gwSaveState({ screen: targetScreen });
@@ -6696,10 +6702,24 @@ const SETTINGS_KEYS = ['trivia_theme','trivia_fs','trivia_voice','trivia_voice_r
   'trivia_custom_cats','trivia_cd_length','trivia_presets','trivia_zinger_chance'];
 
 // שמור הגדרה אחת לשרת — השרת הוא מקור האמת היחיד; localStorage משמש רק כגיבוי במצב לא מקוון
+// ✅ תיקון באג: מפתחות פר-חדר (קול/עיצוב/גופן/תדירות עקיצות) חייבים לעבור דרך הנתיב
+// המפורש /room-data/:roomId/settings כשמנהלים חדר — לא /settings הגלובלי. /settings
+// הגלובלי מסתמך על activeRoomId שמוגדר רק כשמשחק *כבר רץ בפועל*, אז שינוי הגדרות
+// מהפאנל *לפני* שהתחיל משחק (המצב הנפוץ) היה "בורח" בטעות לקובץ הגלובלי.
+const ROOM_SCOPED_SETTING_KEYS = ['trivia_voice', 'trivia_voice_rate', 'trivia_voice_pitch', 'trivia_theme', 'trivia_fs', 'trivia_zinger_chance'];
 function saveSettingToServer(key, value) {
   const strVal = typeof value === 'string' ? value : JSON.stringify(value);
   try { localStorage.setItem(key, strVal); } catch {} // גיבוי מקומי בלבד, לא נקרא בעדיפות
   const body = {}; body[key] = strVal;
+  if (typeof gwRoomId !== 'undefined' && gwRoomId && ROOM_SCOPED_SETTING_KEYS.includes(key)) {
+    const auth = (typeof gwIsAdmin !== 'undefined' && gwIsAdmin) ? { key: '345345' } : { password: gwRoomPassword };
+    fetch(`/room-data/${encodeURIComponent(gwRoomId)}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, ...auth })
+    }).catch(() => {});
+    return;
+  }
   fetch('/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -6795,13 +6815,23 @@ function applySettings(s) {
   if (s['trivia_presets'])     { try { localStorage.setItem('trivia_presets', s['trivia_presets']); if (typeof renderPresets === 'function') renderPresets(); } catch {} }
 }
 
-// טוען הגדרות מהשרת ומחיל אותן — קורה פעם אחת בטעינת הדף.
+// טוען הגדרות מהשרת ומחיל אותן — קורה פעם אחת בטעינת הדף, ושוב בכל פעם שמתחברים לחדר.
 // השרת הוא מקור האמת: אם הוא זמין, הערכים שלו תמיד גוברים על מה שהיה שמור מקומית בדפדפן הזה.
+// ✅ אם יש חדר פעיל (gwRoomId), ממזגים את הגדרות החדר הספציפיות מעל הגלובליות — זה מה
+// שמאפשר לפאנל ההגדרות בתוך חדר לשקף את הבחירות של החדר הזה, גם אם הוא לא "פעיל" מבחינת
+// גיימפליי כרגע (activeRoomId בשרת).
 async function loadSettingsFromServer() {
   try {
     const res = await fetch('/settings');
     if (!res.ok) throw new Error('server error');
     const serverSettings = await res.json();
+    if (typeof gwRoomId !== 'undefined' && gwRoomId) {
+      try {
+        const rr = await fetch(`/room-data/${encodeURIComponent(gwRoomId)}/settings`);
+        const rd = await rr.json();
+        if (rd && rd.settings) Object.assign(serverSettings, rd.settings);
+      } catch {}
+    }
     applySettings(serverSettings);
 
     // העלה לשרת רק מפתחות שעדיין לא קיימים שם בכלל (פעם ראשונה/מעבר ממכשיר ישן) —
