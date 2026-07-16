@@ -1929,6 +1929,26 @@ function toggleSfx() {
 // ========== COUNTDOWN ==========
 let countdownActive = false; // blocks speakQuestion while countdown is running
 
+// ✅ תיקון באג אמיתי: "בפעם הראשונה הקריין לא סופר טוב, בפעם השנייה כן" — הסיבה: מילות
+// הספירה (אחד/שתיים/שלוש/מתחילים! וכו') הופקו (edge-tts) רק ברגע שהספירה עצמה מתחילה
+// (בתוך showCountdown), אבל הספירה מתקדמת במקצב קבוע (950ms למספר) בלי לחכות שהאודיו
+// באמת יגיע — בפעם הראשונה (cache קר) הפקת TTS לוקחת כמה שניות, כך שהמילה "3" למשל
+// עדיין לא מוכנה כשהמסך כבר עבר ל-"2" או "1". בפעם השנייה המילים כבר במטמון והכל מסונכרן.
+// הפתרון: מחממים את המילים האלה הרבה יותר מוקדם (בכניסה לחדר/טעינת הדף), הרבה לפני
+// שהספירה בפועל אי פעם תתחיל — כך שעד שהיא כן תתחיל, האודיו כבר מוכן ומהיר מהמטמון.
+function prewarmCountdownAudio() {
+  if (!ttsOn || !isEdgeVoice(selectedVoiceName)) return;
+  const cdLength = getCountdownLength();
+  const allWords = ['','אחד','שתיים','שלוש','ארבע','חמש','שש','שבע','שמונה','תשע','עשר'];
+  const allGoWords = (narratorPhrases.gowords && narratorPhrases.gowords.length)
+    ? narratorPhrases.gowords
+    : ['יאללה!','קדימה!','מתחילים!','בהצלחה!','אש!'];
+  const wordsToPreload = [];
+  for (let i = cdLength; i >= 1; i--) wordsToPreload.push(allWords[i] || String(i));
+  allGoWords.forEach(w => wordsToPreload.push(w));
+  wordsToPreload.forEach(word => preloadEdge(word, selectedVoiceName, narratorSpeed()));
+}
+
 function getCountdownLength() {
   try { return parseInt(localStorage.getItem('trivia_cd_length') || '5') || 5; } catch { return 5; }
 }
@@ -1973,13 +1993,11 @@ function showCountdown(mode, onDone, introText) {
     ? narratorPhrases.gowords
     : ['יאללה!','קדימה!','מתחילים!','בהצלחה!','אש!'];
 
-  if (ttsOn && isEdgeVoice(selectedVoiceName)) {
-    const wordsToPreload = [];
-    for (let i = cdLength; i >= 1; i--) wordsToPreload.push(allWords[i] || String(i));
-    allGoWords.forEach(w => wordsToPreload.push(w));
-    // preload לblob cache — ניגון מיידי בזמן הספירה
-    wordsToPreload.forEach(word => preloadEdge(word, selectedVoiceName, narratorSpeed()));
-  }
+  // ✅ קריאה חוזרת ל-prewarmCountdownAudio() — לא מזיקה אם כבר חם (preloadEdge מדלג
+  // אוטומטית על fetch כפול לאותו מפתח דרך _fetchingTTSInProgress), אבל היא בעצם רשת
+  // ביטחון: המקום האמיתי שמחמם את המילים האלה עכשיו הוא prewarmCountdownAudio() שרצה
+  // הרבה קודם (בטעינת הדף/כניסה לחדר) — ראו שם להסבר המלא על הבאג שזה פותר.
+  prewarmCountdownAudio();
   // Colors and subs indexed by count (cdLength down to 1) — index 0 = last second
   const countColors = ['var(--red)','var(--orange)','var(--gold)','var(--green)','var(--blue)','var(--purple)','var(--blue)','var(--green)','var(--gold)','var(--orange)'];
   const countSubs   = ['אחרון!','עוד מעט...','מתחילים!','כמעט שם...','היכונו!','ממש עוד שנייה!','כבר כבר!','רגע אחד!','הכינו אצבעות!','פוקוס!'];
@@ -6833,6 +6851,10 @@ async function loadSettingsFromServer() {
       } catch {}
     }
     applySettings(serverSettings);
+    // ✅ מחמם את מילות הספירה לאחור (אחד/שתיים/שלוש/מתחילים!) כמה שיותר מוקדם — הרבה לפני
+    // שספירה בפועל תתחיל. זה פותר את "בפעם הראשונה הקריין לא סופר טוב" (ראו הסבר מלא
+    // ליד prewarmCountdownAudio).
+    if (typeof prewarmCountdownAudio === 'function') prewarmCountdownAudio();
 
     // העלה לשרת רק מפתחות שעדיין לא קיימים שם בכלל (פעם ראשונה/מעבר ממכשיר ישן) —
     // לא דורס ערך שרת קיים בערך מקומי ישן
