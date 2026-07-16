@@ -991,7 +991,7 @@ app.get('/events', (req, res) => {
   req.on('close', () => { clients = clients.filter(c => c !== res); });
 });
 
-app.get('/start', (req, res) => {
+app.get('/start', checkGameControlAuth, (req, res) => {
   const topic = req.query.topic || 'all';
   const mode = req.query.mode || 'classic';
   const roomId = req.query.roomId || null;
@@ -1059,7 +1059,7 @@ function stopAllTimers() {
   gamePaused = false;
 }
 
-app.get('/stop', (req, res) => {
+app.get('/stop', checkGameControlAuth, (req, res) => {
   stopAllTimers();
   // ✅ תיקון כפתור עצור: עצור + איפוס מלא בלחיצה אחת — אין צורך ב"כניסה מחדש" ו"איפוס" נפרד
   gameState = 'lobby';
@@ -1079,7 +1079,7 @@ app.get('/stop', (req, res) => {
 
 // ===== PAUSE / NEXT / REVEAL =====
 
-app.get('/pause', (req, res) => {
+app.get('/pause', checkGameControlAuth, (req, res) => {
   if (gameState !== 'playing') {
     log('⏸️', `בקשת pause/resume התקבלה אבל gameState="${gameState}" (לא "playing") — מתעלם`);
     res.send('not playing'); return;
@@ -1123,7 +1123,7 @@ app.get('/pause', (req, res) => {
   }
 });
 
-app.get('/next', (req, res) => {
+app.get('/next', checkGameControlAuth, (req, res) => {
   if (gameState !== 'playing') { res.send('not playing'); return; }
   gamePaused = false;
   clearTimeout(questionTimer);
@@ -1133,7 +1133,7 @@ app.get('/next', (req, res) => {
   res.send('next');
 });
 
-app.get('/reveal', (req, res) => {
+app.get('/reveal', checkGameControlAuth, (req, res) => {
   if (gameState !== 'playing') { res.send('not playing'); return; }
   gamePaused = false;
   clearTimeout(questionTimer);
@@ -1141,7 +1141,7 @@ app.get('/reveal', (req, res) => {
   log('👁️', 'חשף תשובה ידנית');
   res.send('revealed');
 });
-app.get('/kick', (req, res) => {
+app.get('/kick', checkGameControlAuth, (req, res) => {
   const callId = req.query.callId;
   if (callId && players[callId]) { broadcast({ type: 'playerLeave', callId }); delete players[callId]; }
   res.send('kicked');
@@ -1855,6 +1855,25 @@ app.get('/room-data/:roomId', (req, res) => {
 
 // ===== ROOM AUTH MIDDLEWARE =====
 // בדיקת הרשאות לשינוי תוכן חדר: צריך סיסמת חדר או סיסמת מנהל
+// ✅ תיקון אבטחה: /next, /reveal, /pause, /stop, /kick לא היו מוגנים בכלל (כל אחד עם ה-URL
+// יכול לקרוא להם)! עכשיו דורשים הרשאה (מפתח מנהל, או סיסמת חדר תואמת ל-roomId), וגם בודקים
+// שהחדר המבקש הוא באמת זה שהמשחק החי שלו רץ כרגע — כדי שבעל חדר B לא יוכל לשבש בטעות/בכוונה
+// את המשחק החי של חדר A שרץ באותו רגע. תומך גם ב-query (GET) וגם ב-body (POST).
+function checkGameControlAuth(req, res, next) {
+  const src = { ...req.query, ...(req.body || {}) };
+  const { key, password, roomId } = src;
+  if (key === MASTER_KEY) return next(); // מנהל — תמיד מותר, בלי הגבלת חדר
+  if (!roomId) return res.status(403).json({ ok: false, error: 'נדרש roomId או מפתח מנהל' });
+  const rooms = loadRooms();
+  if (!rooms[roomId]) return res.status(404).json({ ok: false, error: 'חדר לא קיים' });
+  const roomPass = rooms[roomId].password;
+  if (roomPass && password !== roomPass) return res.status(403).json({ ok: false, error: 'סיסמת חדר שגויה' });
+  if (activeRoomId && activeRoomId !== roomId) {
+    return res.status(403).json({ ok: false, error: 'משחק של חדר אחר פעיל כרגע בשרת — אי אפשר לשלוט בו מחדר אחר' });
+  }
+  next();
+}
+
 function checkRoomAuth(req, res, next) {
   const { roomId } = req.params;
   const { key, password } = req.body || {};
@@ -2537,10 +2556,10 @@ function handleLightningAnswer(player,chosen){
   broadcast({type:'answer',playerName:player.name,phone:player.phone,chosen,correct:isCorrect,mode:'lightning'});
 }
 
-app.get('/start-wordchain', (req, res) => { startWordChain(); res.send('ok'); });
-app.get('/start-majority', (req, res) => { startMajority(); res.send('ok'); });
-app.get('/start-reaction', (req, res) => { startReactionGame(); res.send('ok'); });
-app.get('/start-number', (req, res) => { startNumberGame(); res.send('ok'); });
+app.get('/start-wordchain', checkGameControlAuth, (req, res) => { startWordChain(); res.send('ok'); });
+app.get('/start-majority', checkGameControlAuth, (req, res) => { startMajority(); res.send('ok'); });
+app.get('/start-reaction', checkGameControlAuth, (req, res) => { startReactionGame(); res.send('ok'); });
+app.get('/start-number', checkGameControlAuth, (req, res) => { startNumberGame(); res.send('ok'); });
 
 // ===== PRICE IS RIGHT =====
 const PRICE_Q = [
@@ -2763,8 +2782,8 @@ function handleHotseatAns(player,chosen){
   }
 }
 
-app.get('/start-emoji',   (req,res)=>{startEmoji();  res.send('ok');});
-app.get('/start-hotseat', (req,res)=>{startHotseat();res.send('ok');});
+app.get('/start-emoji', checkGameControlAuth, (req, res) =>{startEmoji();  res.send('ok');});
+app.get('/start-hotseat', checkGameControlAuth, (req, res) =>{startHotseat();res.send('ok');});
 
 // ===== FAMILY GAME =====
 const FAMILY_FILE = require('path').join(__dirname, 'family_questions.json');
@@ -2894,7 +2913,7 @@ app.delete('/family/sets/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/start-family', (req, res) => {
+app.get('/start-family', checkGameControlAuth, (req, res) => {
   const setId = req.query.setId || 'all';
   const ok = startFamily(setId);
   res.writeHead(ok ? 200 : 400); res.end(ok ? 'started' : 'no questions');
@@ -3111,12 +3130,12 @@ function handleBCAnswer(player, chosen) {
 }
 
 // Register new game routes
-app.get('/start-guesssong', (req, res) => { startGuessSong(); res.send('ok'); });
-app.get('/start-whoami',    (req, res) => { startWhoAmI();    res.send('ok'); });
-app.get('/start-biblechain',(req, res) => { startBibleChain();res.send('ok'); });
-app.get('/start-whofirst',  (req, res) => { startWhoFirst();  res.send('ok'); });
-app.get('/start-spinwheel', (req, res) => { startSpinWheel(); res.send('ok'); });
-app.get('/start-doubledown',(req, res) => { startDoubleDown(); res.send('ok'); });
+app.get('/start-guesssong', checkGameControlAuth, (req, res) => { startGuessSong(); res.send('ok'); });
+app.get('/start-whoami', checkGameControlAuth, (req, res) => { startWhoAmI();    res.send('ok'); });
+app.get('/start-biblechain', checkGameControlAuth, (req, res) => { startBibleChain();res.send('ok'); });
+app.get('/start-whofirst', checkGameControlAuth, (req, res) => { startWhoFirst();  res.send('ok'); });
+app.get('/start-spinwheel', checkGameControlAuth, (req, res) => { startSpinWheel(); res.send('ok'); });
+app.get('/start-doubledown', checkGameControlAuth, (req, res) => { startDoubleDown(); res.send('ok'); });
 
 // ===== הכפיל או הפסד (DOUBLE DOWN) =====
 let ddTimer = null, ddRound = 0, ddQuestions = [];
@@ -3389,7 +3408,7 @@ function handleFBAnswer(player, chosen) {
   }
 }
 
-app.get('/start-flashback', (req, res) => { startFlashback(); res.send('ok'); });
+app.get('/start-flashback', checkGameControlAuth, (req, res) => { startFlashback(); res.send('ok'); });
 
 // ===== מסירת הפתק (PASSNOTE) — בליץ קבוצתי =====
 let passTimer = null, passRound = 0, passQuestions = [];
@@ -3448,7 +3467,7 @@ function handlePassNoteAnswer(player, chosen) {
   }
 }
 
-app.get('/start-passnote', (req, res) => { startPassNote(); res.send('ok'); });
+app.get('/start-passnote', checkGameControlAuth, (req, res) => { startPassNote(); res.send('ok'); });
 
 // ===== פענוח תמונה (PICTURE DECODE) — ניחוש מתיאור =====
 const PICTURE_QUESTIONS = [
@@ -3517,7 +3536,7 @@ function handlePicAnswer(player, chosen) {
   }
 }
 
-app.get('/start-picture', (req, res) => { startPictureGame(); res.send('ok'); });
+app.get('/start-picture', checkGameControlAuth, (req, res) => { startPictureGame(); res.send('ok'); });
 
 // ===== פירמידה (PYRAMID) — שאלות קשות ויותר, ניקוד עולה, טעות חוצה ניקוד =====
 let pyramidTimer = null, pyramidRound = 0, pyramidQuestions = [];
@@ -3600,7 +3619,7 @@ function handlePyramidAnswer(player, chosen) {
   }
 }
 
-app.get('/start-pyramid', (req, res) => { startPyramid(); res.send('ok'); });
+app.get('/start-pyramid', checkGameControlAuth, (req, res) => { startPyramid(); res.send('ok'); });
 
 // Resend the current round to a reconnected/confused client
 app.get('/resend-round', (req, res) => {

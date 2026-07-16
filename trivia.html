@@ -910,7 +910,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
         <div class="mode-desc">10 שאלות — כל שאלה שווה יותר! נכון = נקודות. טעות = חצי מהניקוד שלך נמחק. מי יגיע לג'קפוט של 2000?</div>
         <div class="mode-badge" style="background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3)">50→100→...→2000 נק'</div>
       </div>
-      <div class="mode-card" data-name="פענוח תמונה picture" style="color:#38bdf8" onclick="fetch('/start-picture').then(()=>{selectMode('picture');goGame();})">
+      <div class="mode-card" data-name="פענוח תמונה picture" style="color:#38bdf8" onclick="fetch('/start-picture'+gameCtrlQS()).then(()=>{selectMode('picture');goGame();})">
         <div class="mode-icon">🖼️🔍</div>
         <div class="mode-name" style="color:#38bdf8">פענוח תמונה!</div>
         <div class="mode-desc">מוצג תיאור מפורט של תמונה — נחשו מה רואים! תמונות מפורסמות, סמלים, דמויות ועוד. 10 שאלות, 20 שניות כל אחת.</div>
@@ -930,7 +930,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
   <div style="font-size:5rem;animation:cdPop 0.5s cubic-bezier(0.34,1.56,0.64,1);">⏸</div>
   <div style="font-family:'Frank Ruhl Libre',serif;font-size:3rem;font-weight:900;color:var(--gold);">המשחק מושהה</div>
   <div style="color:var(--muted);font-size:1rem;letter-spacing:2px;">לחץ המשך להמשיך</div>
-  <button class="btn btn-gold" style="margin-top:8px;padding:14px 40px;font-size:1.1rem;" onclick="fetch('/pause')">▶ המשך</button>
+  <button class="btn btn-gold" style="margin-top:8px;padding:14px 40px;font-size:1.1rem;" onclick="fetch('/pause'+gameCtrlQS())">▶ המשך</button>
 </div>
 
 <!-- ADMIN -->
@@ -1064,8 +1064,8 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
               <button id="btn-reset" class="btn btn-ghost"   style="flex:1;display:none;" onclick="fetch('/reset')">🔄 אפס</button>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
-              <button class="btn btn-ghost btn-sm" onclick="fetch('/next').then(()=>showToast('⏭ שאלה הבאה'))">⏭ שאלה הבאה</button>
-              <button class="btn btn-ghost btn-sm" onclick="fetch('/reveal').then(()=>showToast('👁 חושף...'))">👁 חשוף תשובה</button>
+              <button class="btn btn-ghost btn-sm" onclick="fetch('/next'+gameCtrlQS()).then(()=>showToast('⏭ שאלה הבאה'))">⏭ שאלה הבאה</button>
+              <button class="btn btn-ghost btn-sm" onclick="fetch('/reveal'+gameCtrlQS()).then(()=>showToast('👁 חושף...'))">👁 חשוף תשובה</button>
               <button class="btn btn-ghost btn-sm" id="btn-pause-adm" onclick="togglePauseAdm()">⏸ השהה</button>
               <button class="btn btn-ghost btn-sm" onclick="goGame()">🎮 מסך משחק</button>
             </div>
@@ -2633,6 +2633,15 @@ let timerInt=null,currentScreen='mode';
 // ========== GATEWAY ==========
 let gwRoomId = null;
 let gwIsAdmin = false;
+// ✅ בונה query string הרשאה לנתיבי שליטה במשחק (/next /reveal /pause /stop /kick) שעכשיו
+// דורשים הרשאה (הם היו פתוחים לגמרי לפני התיקון). מנהל שולח מפתח; בעל חדר שולח roomId+סיסמה.
+function gameCtrlQS(extra) {
+  const parts = gwIsAdmin
+    ? ['key=' + encodeURIComponent('345345')]
+    : ['roomId=' + encodeURIComponent(gwRoomId || ''), 'password=' + encodeURIComponent(gwRoomPassword || '')];
+  if (extra) parts.push(extra);
+  return '?' + parts.join('&');
+}
 let gwRoomPassword = null; // סיסמת החדר הנוכחי (לשליחה לשרת)
 
 // בדיקת הרשאות מנהל — מציג הודעה ומחזיר false אם לא מנהל
@@ -4847,15 +4856,15 @@ async function startGameFromRoom() {
 }
 
 function startGame(){
-  if (gameMode === 'guesssong') { fetch('/start-guesssong'); getAC(); return; }
-  if (gameMode === 'whoami')    { fetch('/start-whoami');    getAC(); return; }
-  if (gameMode === 'biblechain'){ fetch('/start-biblechain');getAC(); return; }
-  if (gameMode === 'whofirst')  { fetch('/start-whofirst');  getAC(); return; }
-  if (gameMode === 'spinwheel') { fetch('/start-spinwheel'); getAC(); return; }
-  if (gameMode === 'doubledown'){ fetch('/start-doubledown');getAC(); return; }
-  if (gameMode === 'flashback') { fetch('/start-flashback'); getAC(); return; }
-  if (gameMode === 'passnote')  { fetch('/start-passnote'); getAC(); return; }
-  if (gameMode === 'pyramid')   { fetch('/start-pyramid');   getAC(); return; }
+  if (gameMode === 'guesssong') { fetch('/start-guesssong'+gameCtrlQS()); getAC(); return; }
+  if (gameMode === 'whoami')    { fetch('/start-whoami'+gameCtrlQS());    getAC(); return; }
+  if (gameMode === 'biblechain'){ fetch('/start-biblechain'+gameCtrlQS());getAC(); return; }
+  if (gameMode === 'whofirst')  { fetch('/start-whofirst'+gameCtrlQS());  getAC(); return; }
+  if (gameMode === 'spinwheel') { fetch('/start-spinwheel'+gameCtrlQS()); getAC(); return; }
+  if (gameMode === 'doubledown'){ fetch('/start-doubledown'+gameCtrlQS());getAC(); return; }
+  if (gameMode === 'flashback') { fetch('/start-flashback'+gameCtrlQS()); getAC(); return; }
+  if (gameMode === 'passnote')  { fetch('/start-passnote'+gameCtrlQS()); getAC(); return; }
+  if (gameMode === 'pyramid')   { fetch('/start-pyramid'+gameCtrlQS());   getAC(); return; }
   if (gameMode === 'family')    { showFamilySelector(); return; }
 
   const selected = getSelectedCats();
@@ -4870,6 +4879,9 @@ function startGame(){
   }
   // אם יש חדר פעיל — שלח את ה-roomId לשרת כדי לשחק מהחדר
   if (gwRoomId) params.set('roomId', gwRoomId);
+  // ✅ נדרש עכשיו: הרשאה (מפתח מנהל או roomId+סיסמה) — /start כבר לא פתוח לכולם
+  if (gwIsAdmin) params.set('key', '345345');
+  else if (gwRoomId) params.set('password', gwRoomPassword || '');
   fetch('/start?' + params.toString());
   getAC();
 }
@@ -4886,7 +4898,7 @@ function stopGame(){
   if(btnStop){ btnStop.textContent='⏹ עוצר...'; btnStop.style.opacity='0.6'; }
   if(btnStopGame){ btnStopGame.textContent='⏹ עוצר...'; btnStopGame.style.opacity='0.6'; }
   showToast('⏹ עוצר משחק...');
-  fetch('/stop').catch(()=>{});
+  fetch('/stop'+gameCtrlQS()).catch(()=>{});
 }
 function resetGame(){
   cancelAllSpeech();
@@ -4895,7 +4907,7 @@ function resetGame(){
   showToast('🔄 מאפס...');
   fetch('/reset').catch(()=>{});
 }
-function kickPlayer(id){fetch('/kick?callId='+id);}
+function kickPlayer(id){fetch('/kick'+gameCtrlQS('callId='+encodeURIComponent(id)));}
 
 let editPhone=null;
 function selectPlayer(callId){
@@ -5705,7 +5717,7 @@ loadVoicesList();
 
 let gamePaused = false;
 function togglePauseAdm() {
-  fetch('/pause').then(r=>r.text()).then(state=>{
+  fetch('/pause'+gameCtrlQS()).then(r=>r.text()).then(state=>{
     gamePaused = (state==='paused');
   });
 }
