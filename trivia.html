@@ -1145,6 +1145,40 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
       <div id="rs-cat-chips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
       <div id="rs-cat-msg" style="font-size:0.78rem;margin-top:8px;min-height:14px;text-align:center;"></div>
     </div>
+
+    <!-- ✅ אזהרה: משחק של חדר אחר פעיל כרגע בשרת (יש רק משחק חי אחד בכל רגע נתון) -->
+    <div id="rs-other-active-warning" style="display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);border-radius:10px;padding:10px 14px;margin-bottom:12px;color:var(--red);font-size:0.85rem;text-align:center;">
+      ⚠️ משחק של חדר אחר פעיל כרגע בשרת — אי אפשר לשלוט/להתחיל משחק עד שהוא יסתיים
+    </div>
+
+    <!-- ✅ שליטה במשחק — זהה בעיקרון לפאנל של המנהל, אבל מוגן: פועל רק על המשחק של החדר הזה -->
+    <div id="rs-game-ctrl" style="background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:12px;">
+      <div style="font-weight:600;margin-bottom:10px;">🎮 שליטה במשחק</div>
+      <div style="display:flex;align-items:center;gap:8px;background:var(--s2);border-radius:8px;padding:8px 10px;margin-bottom:10px;flex-wrap:wrap;">
+        <span style="font-size:0.82rem;color:var(--muted);white-space:nowrap;">❓ מספר שאלות:</span>
+        <input id="rs-q-count-inp" type="number" min="1" max="50" value="10" class="inp" style="width:64px;padding:4px 8px;text-align:center;font-weight:700;">
+        <button class="btn btn-ghost btn-sm" onclick="setQuestionCount()">✓ הגדר</button>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" onclick="fetch('/next'+gameCtrlQS()).then(()=>showToast('⏭ שאלה הבאה'))">⏭ שאלה הבאה</button>
+        <button class="btn btn-ghost btn-sm" onclick="fetch('/reveal'+gameCtrlQS()).then(()=>showToast('👁 חושף...'))">👁 חשוף תשובה</button>
+        <button class="btn btn-ghost btn-sm" onclick="togglePauseAdm()">⏸ השהה/המשך</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:rgba(239,68,68,0.3);" onclick="stopGame()">⏹ עצור משחק</button>
+        <button class="btn btn-ghost btn-sm" onclick="goGame()">🎮 מסך משחק</button>
+      </div>
+    </div>
+
+    <!-- ✅ שחקנים + פעילות — אותו מקור נתונים כמו פאנל המנהל (renderPlayers/addFeed) -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div style="background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:14px 16px;max-height:260px;overflow-y:auto;">
+        <div style="font-weight:600;margin-bottom:8px;">👥 שחקנים</div>
+        <div id="rs-players" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+      <div style="background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:14px 16px;max-height:260px;overflow-y:auto;">
+        <div style="font-weight:600;margin-bottom:8px;">📡 פעילות</div>
+        <div id="rs-feed" style="display:flex;flex-direction:column;gap:4px;font-size:0.85rem;"></div>
+      </div>
+    </div>
   </div>
 </div><!-- /room-screen -->
 
@@ -2628,6 +2662,7 @@ const MODE_NAMES = {headtohead:'⚡ ראש בראש',classic:'🎯 כולנו מ
   const MODE_COLORS = {headtohead:'rgba(239,68,68,0.15)',classic:'rgba(65,105,225,0.15)',vote:'rgba(139,92,246,0.15)',survival:'rgba(34,197,94,0.15)',speedrun:'rgba(249,115,22,0.15)',teamplay:'rgba(244,114,182,0.15)',reaction:'rgba(250,204,21,0.15)',number:'rgba(52,211,153,0.15)',wordchain:'rgba(167,139,250,0.15)',majority:'rgba(251,113,133,0.15)',blitz:'rgba(103,232,249,0.15)',whosaid:'rgba(251,191,36,0.15)',lightning:'rgba(240,171,252,0.15)',price:'rgba(245,200,66,0.15)',truefalse:'rgba(74,222,128,0.15)',emoji:'rgba(249,168,212,0.15)',hotseat:'rgba(74,222,128,0.15)',family:'rgba(255,183,77,0.2)',guesssong:'rgba(167,139,250,0.2)',whoami:'rgba(56,189,248,0.2)',biblechain:'rgba(251,191,36,0.2)',whofirst:'rgba(52,211,153,0.2)',spinwheel:'rgba(249,115,22,0.2)',doubledown:'rgba(232,121,249,0.2)',flashback:'rgba(251,146,60,0.2)',passnote:'rgba(52,211,153,0.2)',pyramid:'rgba(245,158,11,0.2)',picture:'rgba(56,189,248,0.2)'};
   const MODE_TC = {headtohead:'var(--red)',classic:'#7090ff',vote:'var(--purple)',survival:'var(--green)',speedrun:'var(--orange)',teamplay:'#f472b6',reaction:'#facc15',number:'#34d399',wordchain:'#a78bfa',majority:'#fb7185',blitz:'#67e8f9',whosaid:'#fbbf24',lightning:'#f0abfc',price:'var(--gold)',truefalse:'var(--green)',emoji:'#f9a8d4',hotseat:'#4ade80',family:'#ffb74d',guesssong:'#a78bfa',whoami:'#38bdf8',biblechain:'#fbbf24',whofirst:'#34d399',spinwheel:'#f97316',doubledown:'#e879f9',flashback:'#fb923c',passnote:'#34d399',pyramid:'#f59e0b',picture:'#38bdf8'};
 let players={},gameState='lobby',gameMode='classic',currentQ=null,correctAns=null;
+let currentActiveRoomId = null; // ✅ איזה חדר מריץ כרגע את המשחק החי בשרת (לצורך הצגת אזהרה בפאנל השליטה של חדר אחר)
 let timerInt=null,currentScreen='mode';
 
 // ========== GATEWAY ==========
@@ -2635,6 +2670,17 @@ let gwRoomId = null;
 let gwIsAdmin = false;
 // ✅ בונה query string הרשאה לנתיבי שליטה במשחק (/next /reveal /pause /stop /kick) שעכשיו
 // דורשים הרשאה (הם היו פתוחים לגמרי לפני התיקון). מנהל שולח מפתח; בעל חדר שולח roomId+סיסמה.
+// ✅ מציג אזהרה ומנטרל את פאנל השליטה בחדר כשמשחק של חדר אחר פעיל כרגע בשרת —
+// מונע בלבול (רואים כפתורים אבל השרת חוסם אותם בכל מקרה בגלל checkGameControlAuth)
+function updateRoomCtrlGate() {
+  const warn = document.getElementById('rs-other-active-warning');
+  const ctrl = document.getElementById('rs-game-ctrl');
+  if (!warn || !ctrl) return;
+  const blocked = !gwIsAdmin && currentActiveRoomId && gwRoomId && currentActiveRoomId !== gwRoomId;
+  warn.style.display = blocked ? 'block' : 'none';
+  ctrl.style.opacity = blocked ? '0.45' : '1';
+  ctrl.style.pointerEvents = blocked ? 'none' : 'auto';
+}
 function gameCtrlQS(extra) {
   const parts = gwIsAdmin
     ? ['key=' + encodeURIComponent('345345')]
@@ -2688,6 +2734,7 @@ function gwInit() {
         gwRoomPassword = d.roomPassword || null;
         gwApplySession();
         if (typeof loadSettingsFromServer === 'function') loadSettingsFromServer(); // ✅ טען הגדרות פר-חדר גם בשחזור סשן
+        if (typeof updateRoomCtrlGate === 'function') updateRoomCtrlGate();
         // שחזר מסך אחרון (לא gateway, לא game — game ישוחזר ע"י SSE)
         const restoreScreen = d.screen && d.screen !== 'gateway' && d.screen !== 'game' ? d.screen : 'mode';
         showScreen(restoreScreen);
@@ -2819,6 +2866,7 @@ async function gwLogin() {
     gwIsAdmin = d.isAdmin || false;
     gwRoomPassword = password; // שמור סיסמה לשימוש בקריאות API עתידיות
     if (typeof loadSettingsFromServer === 'function') loadSettingsFromServer(); // ✅ טען הגדרות פר-חדר עכשיו שאנחנו יודעים לאיזה חדר נכנסנו
+    if (typeof updateRoomCtrlGate === 'function') updateRoomCtrlGate();
     // מנהל → admin/mode, משתמש חדר → room-screen
     const targetScreen = d.isAdmin ? 'mode' : 'room';
     gwSaveState({ screen: targetScreen });
@@ -3793,6 +3841,7 @@ function handle(d){
       if(d.familySets) { familySetNames = d.familySets.map(s => s.name || s.id); initFamilySetChips(d.familySets); }
       updateModeUI();renderAll();
       // שחזר activeRoomId מהשרת — אם השרת רץ מחדר, עדכן את הUI
+      currentActiveRoomId = d.activeRoomId || null;
       if (d.activeRoomId) {
         const srcEl = document.getElementById('gw-room-source');
         if (srcEl) { srcEl.textContent = `🏠 ${d.activeRoomId}`; srcEl.style.display = 'inline'; }
@@ -3800,6 +3849,7 @@ function handle(d){
         const srcEl = document.getElementById('gw-room-source');
         if (srcEl) srcEl.style.display = 'none';
       }
+      if (typeof updateRoomCtrlGate === 'function') updateRoomCtrlGate();
       // שמור gameMode ב-session לשיקום אחרי רענון
       if (gwRoomId) gwSaveState({ screen: currentScreen });
       // If game was playing, jump back to game screen and restore current round
@@ -4316,16 +4366,19 @@ function renderAll(){renderPlayers();renderGamePlayers();updateStatus();}
 function renderPlayers(){
   const vals=Object.values(players);
   document.getElementById('lobby-cnt').textContent=vals.length;
-  const el=document.getElementById('adm-players');
-  if(!el) return;
-  if(vals.length===0){el.innerHTML='<div class="no-p">ממתין לשחקנים...<br><small>חייגו לשלוחה 8</small></div>';return;}
-  el.innerHTML=vals.map(p=>`
-    <div class="aplayer" onclick="selectPlayer('${p.callId}')">
-      <div class="av" style="background:${COLORS[p.color||0]}22;color:${COLORS[p.color||0]}">${p.name.charAt(0)}</div>
-      <div style="flex:1;min-width:0;"><div class="aname">${p.name}</div><div style="font-size:0.95rem;color:var(--muted)">${p.phone}</div></div>
-      <div class="ascore">${p.score||0}</div>
-      <button onclick="event.stopPropagation();kickPlayer('${p.callId}')" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 5px;font-size:0.86rem">✕</button>
-    </div>`).join('');
+  // ✅ מרנדר גם לתוך מסך החדר (rs-players), לא רק למסך המנהל (adm-players)
+  ['adm-players','rs-players'].forEach(elId=>{
+    const el=document.getElementById(elId);
+    if(!el) return;
+    if(vals.length===0){el.innerHTML='<div class="no-p">ממתין לשחקנים...<br><small>חייגו לשלוחה 8</small></div>';return;}
+    el.innerHTML=vals.map(p=>`
+      <div class="aplayer" onclick="selectPlayer('${p.callId}')">
+        <div class="av" style="background:${COLORS[p.color||0]}22;color:${COLORS[p.color||0]}">${p.name.charAt(0)}</div>
+        <div style="flex:1;min-width:0;"><div class="aname">${p.name}</div><div style="font-size:0.95rem;color:var(--muted)">${p.phone}</div></div>
+        <div class="ascore">${p.score||0}</div>
+        <button onclick="event.stopPropagation();kickPlayer('${p.callId}')" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 5px;font-size:0.86rem">✕</button>
+      </div>`).join('');
+  });
 }
 
 function renderGamePlayers(){
@@ -4636,7 +4689,7 @@ function buildProgress(cur,tot){
 }
 
 function addFeed(icon,text){
-  ['adm-feed','gbottom'].forEach(id=>{
+  ['adm-feed','gbottom','rs-feed'].forEach(id=>{
     const el=document.getElementById(id);if(!el)return;
     const item=document.createElement('div');
     item.className='aitem';item.innerHTML=`<span>${icon}</span><span>${text}</span>`;
@@ -6616,7 +6669,8 @@ function testNarratorPhrase() {
 
 
 function setQuestionCount() {
-  const val = parseInt(document.getElementById('q-count-inp').value);
+  const inp = document.getElementById('q-count-inp') || document.getElementById('rs-q-count-inp');
+  const val = parseInt(inp.value);
   if (isNaN(val) || val < 1 || val > 50) { showToast('❌ הכנס מספר בין 1 ל-50'); return; }
   const auth = gwIsAdmin ? { key: '345345' } : { roomId: gwRoomId, password: gwRoomPassword };
   fetch('/set-question-count', {
