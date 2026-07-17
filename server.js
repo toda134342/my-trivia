@@ -1018,7 +1018,7 @@ app.get('/start', checkGameControlAuth, (req, res) => {
   res.writeHead(ok ? 200 : 400); res.end(ok ? 'started' : 'no questions');
 });
 
-app.get('/reset', (req, res) => { resetGame(); res.send('reset'); });
+app.get('/reset', checkGameControlAuth, (req, res) => { resetGame(); res.send('reset'); });
 
 // מצב החדר הפעיל — מחזיר איזה חדר רץ כרגע (אם בכלל)
 app.get('/room-status', (req, res) => {
@@ -1236,7 +1236,7 @@ app.post('/memory-reset', (req, res) => {
   res.json({ ok: true, asked: askedQuestionIds.size });
 });
 
-app.post('/set-question-count', (req, res) => {
+app.post('/set-question-count', checkGameControlAuth, (req, res) => {
   const n = parseInt((req.body || {}).count);
   if (isNaN(n) || n < 1 || n > 50) { res.status(400).json({ ok: false }); return; }
   questionCount = n;

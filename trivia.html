@@ -1061,7 +1061,7 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
               <button id="btn-start" class="btn btn-primary" style="flex:1;" onclick="startGame()">▶️ התחל משחק</button>
               <button id="btn-stop"  class="btn btn-ghost"   style="flex:1;color:var(--red);display:none;" onclick="stopGame()">⏹ עצור משחק</button>
-              <button id="btn-reset" class="btn btn-ghost"   style="flex:1;display:none;" onclick="fetch('/reset')">🔄 אפס</button>
+              <button id="btn-reset" class="btn btn-ghost"   style="flex:1;display:none;" onclick="fetch('/reset'+gameCtrlQS())">🔄 אפס</button>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
               <button class="btn btn-ghost btn-sm" onclick="fetch('/next'+gameCtrlQS()).then(()=>showToast('⏭ שאלה הבאה'))">⏭ שאלה הבאה</button>
@@ -4843,7 +4843,7 @@ async function startGameFromRoom() {
       }
     }
   }
-  const params = new URLSearchParams({ mode: gameMode, roomId: gwRoomId });
+  const params = new URLSearchParams({ mode: gameMode, roomId: gwRoomId, password: gwRoomPassword || '' });
   const res = await fetch('/start?' + params.toString());
   if (res.status === 400) {
     showToast('⚠️ בחר לפחות קטגוריה אחת כדי להתחיל');
@@ -4905,7 +4905,7 @@ function resetGame(){
   stopMusic();
   stopTimer();
   showToast('🔄 מאפס...');
-  fetch('/reset').catch(()=>{});
+  fetch('/reset'+gameCtrlQS()).catch(()=>{});
 }
 function kickPlayer(id){fetch('/kick'+gameCtrlQS('callId='+encodeURIComponent(id)));}
 
@@ -6618,9 +6618,10 @@ function testNarratorPhrase() {
 function setQuestionCount() {
   const val = parseInt(document.getElementById('q-count-inp').value);
   if (isNaN(val) || val < 1 || val > 50) { showToast('❌ הכנס מספר בין 1 ל-50'); return; }
+  const auth = gwIsAdmin ? { key: '345345' } : { roomId: gwRoomId, password: gwRoomPassword };
   fetch('/set-question-count', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ count: val })
+    body: JSON.stringify({ count: val, ...auth })
   }).then(r => r.json()).then(d => {
     if (d.ok) {
       const st = document.getElementById('q-count-status');
