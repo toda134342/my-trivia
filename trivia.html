@@ -679,6 +679,21 @@ position:fixed;pointer-events:none;z-index:9990;width:9px;height:9px;border-radi
       <div style="display:flex;flex-direction:column;gap:10px;">
         <input id="gw-new-room" class="inp" type="text" placeholder="שם החדר החדש" style="width:100%;text-align:right;">
         <input id="gw-new-pass" class="inp" type="text" placeholder="סיסמה לחדר" style="width:100%;text-align:right;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:0.82rem;color:var(--muted);white-space:nowrap;">⏳ תוקף:</span>
+          <select id="gw-new-expiry" class="inp" style="flex:1;">
+            <option value="0" selected>ללא תוקף (ברירת מחדל)</option>
+            <option value="7">שבוע</option>
+            <option value="30">חודש</option>
+            <option value="90">3 חודשים</option>
+            <option value="365">שנה</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:0.82rem;color:var(--muted);white-space:nowrap;">👥 מקס שחקנים:</span>
+          <input id="gw-new-maxplayers" class="inp" type="number" min="1" placeholder="ללא הגבלה" style="flex:1;">
+        </div>
+        <input id="gw-new-note" class="inp" type="text" placeholder="הערה פנימית (רק אתה רואה, למשל: בית כנסת X)" style="width:100%;text-align:right;">
         <button class="btn btn-ghost" style="width:100%;" onclick="gwCreateRoom()">➕ צור חדר</button>
         <div id="gw-create-msg" style="font-size:0.82rem;min-height:16px;text-align:center;"></div>
       </div>
@@ -2907,12 +2922,15 @@ function gwLogout() {
 async function gwCreateRoom() {
   const roomId = (document.getElementById('gw-new-room')?.value || '').trim();
   const password = (document.getElementById('gw-new-pass')?.value || '').trim();
+  const expiresInDays = document.getElementById('gw-new-expiry')?.value || '0';
+  const maxPlayers = document.getElementById('gw-new-maxplayers')?.value || '';
+  const note = (document.getElementById('gw-new-note')?.value || '').trim();
   const msgEl = document.getElementById('gw-create-msg');
   if (!roomId || !password) { if (msgEl) { msgEl.textContent = 'יש למלא שם וסיסמה'; msgEl.style.color = 'var(--red)'; } return; }
   try {
     const r = await fetch('/create-room', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ roomId, password, creatorPassword: '345345' })
+      body: JSON.stringify({ roomId, password, creatorPassword: '345345', expiresInDays, maxPlayers, note })
     });
     const d = await r.json();
     if (msgEl) {
@@ -2920,8 +2938,10 @@ async function gwCreateRoom() {
       msgEl.style.color = d.ok ? 'var(--green)' : 'var(--red)';
     }
     if (d.ok) {
-      if (document.getElementById('gw-new-room')) document.getElementById('gw-new-room').value = '';
-      if (document.getElementById('gw-new-pass')) document.getElementById('gw-new-pass').value = '';
+      ['gw-new-room','gw-new-pass','gw-new-maxplayers','gw-new-note'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = '';
+      });
+      const expEl = document.getElementById('gw-new-expiry'); if (expEl) expEl.value = '0';
       gwLoadRoomsList();
     }
   } catch { if (msgEl) { msgEl.textContent = 'שגיאת חיבור'; msgEl.style.color = 'var(--red)'; } }
@@ -2934,16 +2954,51 @@ async function gwLoadRoomsList() {
     const r = await fetch('/rooms?key=345345');
     const rooms = await r.json();
     if (!rooms.length) { el.textContent = 'אין חדרים עדיין'; return; }
-    el.innerHTML = rooms.map(rm =>
-      `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);">
-        <button onclick="gwDeleteRoom('${rm.id}')" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:0.75rem;">🗑️</button>
-        <div style="text-align:right;">
-          <div style="font-weight:600;">${rm.id}</div>
-          <div style="font-size:0.72rem;color:var(--muted);">${rm.questionCount} שאלות</div>
+    const now = new Date();
+    el.innerHTML = rooms.map(rm => {
+      let expiryLabel = '⏳ ללא תוקף';
+      let expiryColor = 'var(--muted)';
+      if (rm.expiresAt) {
+        const expDate = new Date(rm.expiresAt);
+        const isExpired = expDate < now;
+        expiryLabel = `⏳ ${isExpired ? 'פג ב' : 'עד'} ${expDate.toLocaleDateString('he-IL')}`;
+        expiryColor = isExpired ? 'var(--red)' : 'var(--gold)';
+      }
+      return `<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border);gap:6px;">
+        <div style="display:flex;gap:4px;flex-shrink:0;">
+          <button onclick="gwDeleteRoom('${rm.id}')" title="מחק" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:0.8rem;">🗑️</button>
+          <button onclick="gwToggleRoomDisabled('${rm.id}',${!rm.disabled})" title="${rm.disabled?'הפעל':'השהה'}" style="background:none;border:none;color:${rm.disabled?'var(--green)':'var(--muted)'};cursor:pointer;font-size:0.8rem;">${rm.disabled?'▶️':'⏸️'}</button>
+          <button onclick="gwExtendRoom('${rm.id}')" title="הארך תוקף" style="background:none;border:none;color:var(--gold);cursor:pointer;font-size:0.8rem;">⏳</button>
         </div>
-      </div>`
-    ).join('');
+        <div style="text-align:right;flex:1;min-width:0;">
+          <div style="font-weight:600;">${rm.id} ${rm.disabled?'<span style="color:var(--red);font-size:0.7rem;">(מושהה)</span>':''}</div>
+          <div style="font-size:0.72rem;color:var(--muted);">${rm.questionCount} שאלות${rm.maxPlayers?` · מקס ${rm.maxPlayers} שחקנים`:''}</div>
+          <div style="font-size:0.72rem;color:${expiryColor};">${expiryLabel}</div>
+          ${rm.note?`<div style="font-size:0.72rem;color:var(--muted);font-style:italic;">📝 ${rm.note}</div>`:''}
+        </div>
+      </div>`;
+    }).join('');
   } catch { el.textContent = 'שגיאה בטעינת חדרים'; }
+}
+
+async function gwToggleRoomDisabled(id, disabled) {
+  await fetch(`/room-meta/${encodeURIComponent(id)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: '345345', disabled })
+  });
+  gwLoadRoomsList();
+}
+
+async function gwExtendRoom(id) {
+  const days = prompt('כמה ימי תוקף נוספים מהיום? (0 = ללא תוקף)', '30');
+  if (days === null) return;
+  const n = parseInt(days);
+  if (isNaN(n) || n < 0) { alert('מספר לא תקין'); return; }
+  await fetch(`/room-meta/${encodeURIComponent(id)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: '345345', expiresInDays: n })
+  });
+  gwLoadRoomsList();
 }
 
 async function gwDeleteRoom(id) {

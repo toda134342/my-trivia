@@ -896,6 +896,16 @@ yemotRouter.get('/yemot', async (call) => {
       delete players[oldEntry.callId];
     }
     const name = getPlayerName(phone);
+    // ✅ הגבלת שחקנים מקסימלית לחדר (אם הוגדרה ב-/create-room או /room-meta) — לא רושמים
+    // שחקן חדש מעבר למכסה. נבדק מול activeRoomId כדי לא להגביל משחקים מהמאגר הכללי.
+    if (activeRoomId) {
+      const roomsCfg = loadRooms();
+      const roomCfg = roomsCfg[activeRoomId];
+      if (roomCfg && roomCfg.maxPlayers && Object.keys(players).length >= roomCfg.maxPlayers) {
+        log('🚫', `${phone} נדחה — חדר "${activeRoomId}" הגיע למכסת השחקנים (${roomCfg.maxPlayers})`);
+        return;
+      }
+    }
     const colorIdx = Object.keys(players).length % 6;
     players[callId] = { callId, phone, name, score: 0, correct: 0, answered: false, color: colorIdx, _chosen: null };
     broadcast({ type: 'playerJoin', player: players[callId] });
@@ -1783,29 +1793,68 @@ app.post('/login', (req, res) => {
 
   const rooms = loadRooms();
   if (!rooms[roomId]) return res.json({ ok: false, error: 'חדר לא קיים. בקש מהמנהל ליצור אותו.' });
-  if (rooms[roomId].password !== password) return res.json({ ok: false, error: 'סיסמה שגויה' });
+  const room = rooms[roomId];
+  // ✅ בדיקות תוקף/השהיה — לפני בדיקת סיסמה, כדי לתת הודעה ברורה למה לא ניתן להיכנס
+  if (room.disabled) return res.json({ ok: false, error: 'החדר הושהה זמנית ע"י המנהל' });
+  if (room.expiresAt && new Date(room.expiresAt) < new Date()) {
+    const d = new Date(room.expiresAt).toLocaleDateString('he-IL');
+    return res.json({ ok: false, error: `פג תוקף החדר (היה בתוקף עד ${d}) — פנה למנהל להארכה` });
+  }
+  if (room.password !== password) return res.json({ ok: false, error: 'סיסמה שגויה' });
 
   log('🚪', `כניסה לחדר: ${roomId}`);
   res.json({ ok: true, roomId, isAdmin: false });
 });
 
 app.post('/create-room', (req, res) => {
-  const { roomId, password, creatorPassword } = req.body || {};
+  const { roomId, password, creatorPassword, expiresInDays, maxPlayers, note } = req.body || {};
   if (creatorPassword !== MASTER_KEY) return res.json({ ok: false, error: 'רק מנהל יכול ליצור חדר' });
   if (!roomId || !password) return res.json({ ok: false, error: 'נדרש שם חדר וסיסמה' });
 
   const rooms = loadRooms();
   if (rooms[roomId]) return res.json({ ok: false, error: 'חדר כזה כבר קיים' });
 
-  rooms[roomId] = { password, createdAt: new Date().toISOString() };
+  // ✅ ברירת מחדל: ללא תוקף (expiresInDays=0/ריק → expiresAt=null). אפשר לתת מספר ימים
+  // (למשל 30 לחודש) — גם בזמן היצירה וגם אחר-כך דרך /room-meta/:roomId.
+  const days = parseInt(expiresInDays) || 0;
+  const expiresAt = days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : null;
+
+  rooms[roomId] = {
+    password,
+    createdAt: new Date().toISOString(),
+    expiresAt,                                     // null = ללא תוקף לעולם (ברירת מחדל)
+    maxPlayers: parseInt(maxPlayers) || null,       // null = ללא הגבלת שחקנים
+    note: (note || '').slice(0, 200),               // הערה פנימית למנהל בלבד (לא מוצגת לבעל החדר)
+    disabled: false,                                // השהיה ידנית — חוסם כניסה בלי למחוק כלום
+  };
   saveRooms(rooms);
 
   // צור קובץ JSON לחדר ב-/app/data/rooms/
   const roomData = { roomId, questions: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   saveRoomData(roomId, roomData);
 
-  log('🏠', `חדר חדש נוצר: ${roomId}`);
+  log('🏠', `חדר חדש נוצר: ${roomId}${expiresAt ? ` (בתוקף עד ${new Date(expiresAt).toLocaleDateString('he-IL')})` : ' (ללא תוקף)'}`);
   res.json({ ok: true });
+});
+
+// ✅ עדכון הגדרות חדר אחרי היצירה (מנהל בלבד) — הארכת תוקף, הגבלת שחקנים, הערה, השהיה
+app.post('/room-meta/:roomId', (req, res) => {
+  const { key } = req.body || {};
+  if (key !== MASTER_KEY) return res.status(403).json({ ok: false, error: 'רק מנהל' });
+  const { roomId } = req.params;
+  const rooms = loadRooms();
+  if (!rooms[roomId]) return res.status(404).json({ ok: false, error: 'חדר לא קיים' });
+  const { expiresInDays, maxPlayers, note, disabled } = req.body || {};
+  if (expiresInDays !== undefined) {
+    const days = parseInt(expiresInDays) || 0;
+    rooms[roomId].expiresAt = days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : null;
+  }
+  if (maxPlayers !== undefined) rooms[roomId].maxPlayers = parseInt(maxPlayers) || null;
+  if (note !== undefined) rooms[roomId].note = String(note).slice(0, 200);
+  if (disabled !== undefined) rooms[roomId].disabled = !!disabled;
+  saveRooms(rooms);
+  log('⚙️', `הגדרות חדר "${roomId}" עודכנו ע"י מנהל`);
+  res.json({ ok: true, room: rooms[roomId] });
 });
 
 // נתיב ציבורי — רק שמות חדרים וכמות שאלות, ללא סיסמאות (לכניסה לחדר)
@@ -1825,7 +1874,11 @@ app.get('/rooms', (req, res) => {
   // הוסף מספר שאלות לכל חדר
   const list = Object.entries(rooms).map(([id, r]) => {
     const data = loadRoomData(id);
-    return { id, createdAt: r.createdAt, questionCount: data.questions?.length || 0 };
+    return {
+      id, createdAt: r.createdAt, questionCount: data.questions?.length || 0,
+      expiresAt: r.expiresAt || null, maxPlayers: r.maxPlayers || null,
+      note: r.note || '', disabled: !!r.disabled,
+    };
   });
   res.json(list);
 });
