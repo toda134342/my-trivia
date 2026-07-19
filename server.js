@@ -1464,7 +1464,10 @@ function _fetchEdgeTTS(text, profile, speed) {
     ];
     log('🎤', 'edge-tts: ' + text.slice(0,40) + ' [voice=' + profile.voice + ' rate=' + rate + ' pitch=' + profile.pitch + ' volume=' + volume + ']');
 
-    const proc = spawn('edge-tts', args, { timeout: 15000 });
+    // ✅ הוגדל מ-15000: בלוג שנשלח ראינו שרק טקסטים ארוכים (שאלות עם 4 תשובות, 90-140 תווים)
+    // נופלים לגיבוי הרובוטי, בעוד טקסטים קצרים (חשיפת תשובה) תמיד מצליחים — סימן שה-15
+    // שניות היו לפעמים צמודות מדי לטקסט ארוך, בטח בזמנים שיש כמה בקשות pre-warm במקביל.
+    const proc = spawn('edge-tts', args, { timeout: 25000 });
     let errBuf = '';
     proc.stderr.on('data', d => { errBuf += d.toString(); });
 
