@@ -19,7 +19,7 @@ COPY server.js .
 COPY trivia.html .
 COPY questions.json .
 
-RUN npm init -y && npm install express yemot-router2
+RUN npm init -y && npm install express yemot-router2 ioredis
 # cache-bust: edge-tts primary + espeak-ng fallback build v3
 RUN espeak-ng --version && espeak-ng -v he 'בדיקה' -w /tmp/test.wav && echo 'espeak-ng Hebrew OK (fallback engine)'
 RUN edge-tts --version && echo 'edge-tts installed OK'

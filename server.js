@@ -7,6 +7,85 @@ const PORT = 8080;
 const NAMES_FILE = '/app/data/names.json';
 const QUESTIONS_FILE = path.join(__dirname, 'questions.json');
 
+// ✅ פתרון לאובדן נתונים בכל deploy: ל-Render בתוכנית free אין דיסק קבוע (למרות מה
+// שכתוב ב-render.yaml — זה פשוט מתעלם מזה בתוכנית free), אז כל מה שנשמר תחת /app/data
+// נמחק בכל דיפלוי. אם מוגדר משתנה סביבה REDIS_URL (לדוגמה מ-Aiven, Upstash וכו' — שירות
+// חיצוני, לא של Render עצמו) — כל שמירה מועתקת גם ל-Redis, וכל עליה מחדש של השרת קודם
+// "מטעינה" (hydrate) את כל הקבצים בחזרה מ-Redis לפני שהוא מתחיל להשתמש בהם. אם REDIS_URL
+// לא מוגדר — שום דבר לא משתנה, המערכת עובדת בדיוק כמו קודם (רק על הדיסק המקומי הזמני).
+const REDIS_URL = process.env.REDIS_URL || '';
+let redisClient = null;
+if (REDIS_URL) {
+  const Redis = require('ioredis');
+  redisClient = new Redis(REDIS_URL, {
+    maxRetriesPerRequest: 2,
+    connectTimeout: 8000,
+    tls: REDIS_URL.startsWith('rediss://') ? {} : undefined, // Aiven/Upstash לרוב עם rediss:// (SSL)
+  });
+  redisClient.on('error', (e) => console.error('[Redis] שגיאה:', e.message));
+  redisClient.on('connect', () => console.log('[Redis] ✅ מחובר — נתונים ישרדו deploy'));
+} else {
+  console.log('[Redis] REDIS_URL לא מוגדר — שמירה על דיסק מקומי בלבד (יימחק בכל deploy הבא)');
+}
+
+function _redisKeyForFile(filePath) {
+  return 'trivia:file:' + path.resolve(filePath).replace(/[\/\\]/g, ':');
+}
+
+// עוטף fs.writeFileSync — שומר מקומית כרגיל, ובמקביל (לא חוסם) מעתיק ל-Redis אם מוגדר
+function writeFileMirrored(filePath, content) {
+  fs.writeFileSync(filePath, content);
+  if (!redisClient) return;
+  redisClient.set(_redisKeyForFile(filePath), content).catch(e =>
+    console.error('[Redis] מירור נכשל עבור', filePath, ':', e.message));
+}
+
+async function _hydrateOneFile(filePath) {
+  if (!redisClient) return;
+  try {
+    const content = await redisClient.get(_redisKeyForFile(filePath));
+    if (content !== null) {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(filePath, content);
+    }
+  } catch (e) { console.error('[Redis] hydrate נכשל עבור', filePath, ':', e.message); }
+}
+
+// טוען מ-Redis את כל הקבצים חזרה לדיסק המקומי — נקרא פעם אחת, לפני שהשרת מתחיל להאזין
+async function hydrateAllFromRedis() {
+  if (!redisClient) return;
+  try { await redisClient.ping(); } catch (e) {
+    console.error('[Redis] לא ניתן להתחבר, ממשיכים בלי hydrate:', e.message);
+    return;
+  }
+  const singleFiles = [NAMES_FILE, QUESTIONS_FILE, ROOMS_FILE, SETTINGS_FILE, ASKED_FILE, FAMILY_FILE, FAMILY_SETS_FILE];
+  for (const fp of singleFiles) await _hydrateOneFile(fp);
+  // קבצי החדרים הבודדים (אחד לכל חדר) — נשמרים במפתחות עם קידומת נפרדת
+  try {
+    if (!fs.existsSync(ROOMS_DIR)) fs.mkdirSync(ROOMS_DIR, { recursive: true });
+    const prefix = 'trivia:roomfile:';
+    const keys = await redisClient.keys(prefix + '*');
+    for (const k of keys) {
+      const content = await redisClient.get(k);
+      if (content === null) continue;
+      const fname = k.slice(prefix.length);
+      fs.writeFileSync(path.join(ROOMS_DIR, fname), content);
+    }
+    console.log(`[Redis] ✅ שוחזרו ${keys.length} קבצי חדרים + ${singleFiles.length} קבצי מערכת`);
+  } catch (e) { console.error('[Redis] hydrate חדרים נכשל:', e.message); }
+}
+
+// עוטף שמירת קובץ-חדר בודד — משתמש בקידומת מפתח נפרדת (roomfile) כדי ש-hydrateAllFromRedis
+// יוכל לשחזר את כל קבצי החדרים גם בלי לדעת מראש אילו חדרים קיימים
+function writeRoomFileMirrored(filePath, content) {
+  fs.writeFileSync(filePath, content);
+  if (!redisClient) return;
+  const fname = path.basename(filePath);
+  redisClient.set('trivia:roomfile:' + fname, content).catch(e =>
+    console.error('[Redis] מירור חדר נכשל עבור', fname, ':', e.message));
+}
+
 // ✅ עקיצות ומחמאות אקראיות מהקריין — נבחרות ב-revealAnswer() (ראו שם), לא בכל סיבוב,
 // כדי שלא יהיה צפוי/מעצבן. ניסוח קליל ולא פוגעני — זה משחק חברתי, לא רצינו "לשבור" אף אחד.
 const NARRATOR_ROAST = [
@@ -160,7 +239,7 @@ function saveRoomData(roomId, data) {
   ensureRoomsDir();
   try {
     data.updatedAt = new Date().toISOString();
-    fs.writeFileSync(roomFilePath(roomId), JSON.stringify(data, null, 2));
+    writeRoomFileMirrored(roomFilePath(roomId), JSON.stringify(data, null, 2));
     log('💾', `חדר "${roomId}" נשמר (${data.questions?.length || 0} שאלות)`);
   } catch(e) { log('⚠️', 'שגיאה בשמירת חדר: ' + e.message); }
 }
@@ -176,7 +255,7 @@ function saveRooms(rooms) {
   try {
     const dir = path.dirname(ROOMS_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(ROOMS_FILE, JSON.stringify(rooms, null, 2));
+    writeFileMirrored(ROOMS_FILE, JSON.stringify(rooms, null, 2));
   } catch(e) { log('⚠️', 'שגיאה בשמירת חדרים: ' + e.message); }
 }
 
@@ -199,11 +278,12 @@ function saveAppSettings() {
   try {
     const dir = path.dirname(SETTINGS_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(appSettings, null, 2));
+    writeFileMirrored(SETTINGS_FILE, JSON.stringify(appSettings, null, 2));
   } catch (e) { log('⚠️', 'שגיאה בשמירת הגדרות: ' + e.message); }
 }
 
-loadAppSettings();
+// ✅ loadAppSettings() לא רץ כאן יותר — הוא רץ אחרי hydrateAllFromRedis(), ליד app.listen()
+// למטה, כדי שיטען את הגרסה המשוחזרת מ-Redis ולא גרסה ריקה/ישנה מהדיסק המקומי הטרי.
 
 let players = {};
 let playerNames = {};
@@ -316,7 +396,7 @@ function saveNames() {
   try {
     const dir = path.dirname(NAMES_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(NAMES_FILE, JSON.stringify(playerNames, null, 2));
+    writeFileMirrored(NAMES_FILE, JSON.stringify(playerNames, null, 2));
   } catch (e) { log('⚠️', e.message); }
 }
 
@@ -350,7 +430,7 @@ function saveAskedQuestions() {
     const dir = '/app/data';
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const today = new Date().toISOString().slice(0,10);
-    fs.writeFileSync(ASKED_FILE, JSON.stringify({ date: today, ids: [...askedQuestionIds] }));
+    writeFileMirrored(ASKED_FILE, JSON.stringify({ date: today, ids: [...askedQuestionIds] }));
   } catch(e) { log('⚠️', 'שגיאה בשמירת שאלות: ' + e.message); }
 }
 
@@ -1223,7 +1303,7 @@ app.post('/add-question', (req, res) => {
   if (!q || !a || a.length !== 4 || correct === undefined || !topic) { res.status(400).json({ ok: false }); return; }
   const qs = loadQuestions();
   qs.push({ q, a, correct, topic });
-  fs.writeFileSync(QUESTIONS_FILE, JSON.stringify(qs, null, 2));
+  writeFileMirrored(QUESTIONS_FILE, JSON.stringify(qs, null, 2));
   res.json({ ok: true, total: qs.length });
 });
 
@@ -1261,7 +1341,7 @@ app.put('/questions/:idx', (req, res) => {
   const qs = loadQuestions();
   if (idx < 0 || idx >= qs.length) { res.status(404).json({ ok: false }); return; }
   qs[idx] = { q, a, correct, topic };
-  fs.writeFileSync(QUESTIONS_FILE, JSON.stringify(qs, null, 2));
+  writeFileMirrored(QUESTIONS_FILE, JSON.stringify(qs, null, 2));
   log('✏️', `שאלה ${idx} עודכנה ע"י מנהל`);
   res.json({ ok: true });
 });
@@ -1274,7 +1354,7 @@ app.delete('/questions/:idx', (req, res) => {
   const qs = loadQuestions();
   if (idx < 0 || idx >= qs.length) { res.status(404).json({ ok: false }); return; }
   qs.splice(idx, 1);
-  fs.writeFileSync(QUESTIONS_FILE, JSON.stringify(qs, null, 2));
+  writeFileMirrored(QUESTIONS_FILE, JSON.stringify(qs, null, 2));
   log('🗑️', `שאלה ${idx} נמחקה ע"י מנהל`);
   res.json({ ok: true });
 });
@@ -2296,17 +2376,23 @@ app.post('/reveal-narrator-done', (req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, async () => {
-  log('🚀', `שרת רץ על פורט ${PORT}`);
-  loadNames();
-  // בדיקת TTS בעלייה: edge-tts (רשת, קול נוירוני) עם נפילה חזרה ל-espeak-ng (מקומי) אם הרשת חסומה
-  fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(({ data, mime }) => {
-    const engine = mime === 'audio/mpeg' ? 'edge-tts (נוירוני)' : 'espeak-ng (גיבוי מקומי)';
-    log('✅', `TTS: ניגון לדוגמה הצליח דרך ${engine} (${data.length} בתים)`);
-  }).catch(e => {
-    log('🔇', 'TTS: ניגון לדוגמה נכשל בשני המנועים — ' + e.message.slice(0,200));
+// ✅ קודם משחזרים הכל מ-Redis (אם מוגדר), רק אז טוענים הגדרות ומתחילים להאזין לבקשות —
+// כך שהשרת תמיד עולה עם הנתונים האחרונים שנשמרו, גם אחרי deploy על Render free שמוחק דיסק.
+(async () => {
+  await hydrateAllFromRedis();
+  loadAppSettings();
+  app.listen(PORT, async () => {
+    log('🚀', `שרת רץ על פורט ${PORT}`);
+    loadNames();
+    // בדיקת TTS בעלייה: edge-tts (רשת, קול נוירוני) עם נפילה חזרה ל-espeak-ng (מקומי) אם הרשת חסומה
+    fetchTTSOnce('בדיקה', 'edge:avri', 1.0).then(({ data, mime }) => {
+      const engine = mime === 'audio/mpeg' ? 'edge-tts (נוירוני)' : 'espeak-ng (גיבוי מקומי)';
+      log('✅', `TTS: ניגון לדוגמה הצליח דרך ${engine} (${data.length} בתים)`);
+    }).catch(e => {
+      log('🔇', 'TTS: ניגון לדוגמה נכשל בשני המנועים — ' + e.message.slice(0,200));
+    });
   });
-});
+})();
 
 // ===== NON-TRIVIA GAMES =====
 
@@ -2846,13 +2932,13 @@ function loadFamilyQuestions() {
   try { return JSON.parse(fs.readFileSync(FAMILY_FILE, 'utf8')); } catch { return []; }
 }
 function saveFamilyQuestions(qs) {
-  try { fs.writeFileSync(FAMILY_FILE, JSON.stringify(qs, null, 2)); } catch(e){ log('⚠️',e.message); }
+  try { writeFileMirrored(FAMILY_FILE, JSON.stringify(qs, null, 2)); } catch(e){ log('⚠️',e.message); }
 }
 function loadFamilySets() {
   try { return JSON.parse(fs.readFileSync(FAMILY_SETS_FILE, 'utf8')); } catch { return []; }
 }
 function saveFamilySets(sets) {
-  try { fs.writeFileSync(FAMILY_SETS_FILE, JSON.stringify(sets, null, 2)); } catch(e){ log('⚠️',e.message); }
+  try { writeFileMirrored(FAMILY_SETS_FILE, JSON.stringify(sets, null, 2)); } catch(e){ log('⚠️',e.message); }
 }
 
 let familyTimer = null, familyRound = 0, familyQuestions = [], familySetName = '';
