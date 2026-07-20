@@ -858,7 +858,11 @@ function revealAnswer() {
   let narratorZinger = null;
   const zingerChance = parseFloat(getRoomSetting('trivia_zinger_chance', ZINGER_CHANCE_DEFAULT));
   if (gameMode !== 'vote' && Math.random() < zingerChance) {
-    const answered = Object.values(players).filter(p => p.answered && p.phone !== 'admin');
+    // ✅ תיקון: הסרתי את החסימה של phone==='admin' כאן. היא הייתה נחוצה במקום אחר (כדי
+    // ש"אדמין" לא יופיע ברשימת השחקנים הגלויה על המסך), אבל כאן היא בטעות מנעה לגמרי כל
+    // עקיצה/מחמאה בכל פעם שאדמין הוא היחיד ששיחק/בדק (בדיוק התרחיש שראינו בלוגים) — כי
+    // "answered" תמיד יצא ריק, אז גם עם 100% סיכוי שום עקיצה לא הייתה נבחרת.
+    const answered = Object.values(players).filter(p => p.answered);
     const wrong = answered.filter(p => p._chosen !== q.correct);
     const right = answered.filter(p => p._chosen === q.correct);
     const preferRoast = Math.random() < 0.5;
