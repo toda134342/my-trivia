@@ -4095,10 +4095,17 @@ function handle(d){
         if (ttsOn) {
           // ✅ אין יותר setTimeout 300ms — ה-TTS כבר במטמון (pre-warm ב-beginAnswerWindow, 22 שניות מראש).
           // הקריין מתחיל לדבר מיד עם הופעת מסך התשובה.
-          // ✅ עקיצה/מחמאה אקראית (d.narratorZinger, מוחלט בשרת) — מצורפת לאותו משפט כדי לא
-          // לשבור את סנכרון reveal-narrator-done הקיים (קריאה אחת ל-_ttsPlay, לא שרשור שתיים).
-          const revealText = 'התשובה הנכונה היא: ' + d.correctText + (d.narratorZinger ? '... ' + d.narratorZinger : '');
-          _ttsPlay(revealText, TTS_PRI.QUESTION, notifyRevealDone);
+          // ✅ תיקון: העקיצה/מחמאה כבר לא מחוברת לאותו משפט כמו ה"תשובה הנכונה" — היא לא
+          // ניתנת ל-pre-warm (לא יודעים מראש מי יזכה בה), אז חיבור שלה לאותו משפט גרם לעיכוב
+          // בדיוק בהודעה הכי קריטית (התשובה הנכונה). עכשיו: התשובה הנכונה תמיד מוכנה מראש
+          // ומתנגנת מיד, מודיעה לשרת מיד שסיימה (המשחק ממשיך בלי לחכות), והעקיצה/מחמאה (אם
+          // יש) מתנגנת בנפרד אחריה ברקע — אם היא לא מספיקה/נקטעת בגלל השאלה הבאה, לא נורא.
+          const revealText = 'התשובה הנכונה היא: ' + d.correctText;
+          const zingerText = d.narratorZinger || null;
+          _ttsPlay(revealText, TTS_PRI.QUESTION, () => {
+            notifyRevealDone();
+            if (zingerText) _ttsPlay(zingerText, TTS_PRI.LOW, () => {});
+          });
           _ttsNarratorDone = notifyRevealDone;
         } else {
           notifyRevealDone();
